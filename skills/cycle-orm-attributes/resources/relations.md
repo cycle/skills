@@ -260,7 +260,7 @@ public Customer $customer;
 
 **The "lazy" default is almost always right.** Eager is permanently baked into the schema, and it's easy to forget you have JOINs everywhere.
 
-`#[Embedded]` is the only relation whose default is `'eager'` (because Embedded is "columns of the same table", lazy makes no sense).
+`#[Embedded]` is the only relation whose default is `'eager'`. With `'lazy'` you must explicitly load via `->load('name')` or `BulkLoader` — without that, property access throws `TypeError`; details in `embeddable.md`.
 
 ### Post-load for an already-fetched set — `BulkLoader`
 
