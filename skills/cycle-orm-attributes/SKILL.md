@@ -45,8 +45,7 @@ Load files by task trigger. Each is self-contained, with its own minimum, decisi
 
 - `resources/define-entity.md` — creating a new entity, choosing role/repository/mapper/scope, two declaration styles (property-level vs class-level), private constructor + Factory, composite PK.
 - `resources/column-types.md` — describing a column: types, defaults, `length`/`precision`/`unsigned`, PG/MSSQL-specific, identifier strategies (UUID/ULID/snowflake), `GeneratedValue`, **typecast** (int/bool/float/datetime/json + BackedEnum).
-- `resources/relations.md` — association between entities: HasOne/HasMany/BelongsTo/RefersTo/ManyToMany, `innerKey`/`outerKey`, FK behaviour, cascade, nullable, lazy/eager, `Inverse`, pivot `through`, **polymorphic** relations.
-- `resources/collections.md` — collections for `*Many` relations: `CollectionFactoryInterface`, built-in factories (Array/Doctrine/Illuminate/Loophp), registration via `Factory::withCollectionFactory()`, the `collection:` parameter (alias vs FQCN), constructor initialization, M2M pivot access through `PivotedCollectionInterface` (`getPivot`/`setPivot`), `array` limitations under the proxy mapper.
+- `resources/relations.md` — association between entities: HasOne/HasMany/BelongsTo/RefersTo/ManyToMany, `innerKey`/`outerKey`, FK behaviour, cascade, nullable, lazy/eager, `Inverse`, pivot `through`, the `collection:` parameter (alias/FQCN), **polymorphic** relations.
 - `resources/inheritance.md` — class hierarchy: STI (`#[SingleTable]`/`#[DiscriminatorColumn]`) vs JTI (`#[JoinedTable]`), traits, multi-level, standalone entity extending an STI child.
 - `resources/embeddable.md` — value-object as parent columns (`#[Embeddable]` + `#[Embedded]`), `columnPrefix`/`prefix:`, comparison with JSON-VO.
 - `resources/table-constraints.md` — indexes (`#[Index]`, composite, unique), composite PK via `#[PrimaryKey]`, manual FK without a relation (`#[ForeignKey]`).

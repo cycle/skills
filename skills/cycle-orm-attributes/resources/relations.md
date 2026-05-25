@@ -324,16 +324,31 @@ The schema builder validates the pair in `<Relation>::inverseRelation()` and thr
 
 ---
 
-## `collection` (HasMany, ManyToMany)
+## `collection` (HasMany, ManyToMany, MorphedHasMany)
 
-By default `HasMany`/`ManyToMany` is hydrated into an `array` (`ArrayCollectionFactory`). For a typed collection (Doctrine, Laravel, loophp, custom) — set `collection:`:
+`HasMany`, `ManyToMany`, and `MorphedHasMany` accept `collection: ?string`. The parameter selects which collection class Cycle wraps the elements into at hydration. The default is plain PHP `array` (`ArrayCollectionFactory`).
+
+Accepted forms:
 
 ```php
-#[HasMany(target: Order::class, collection: 'doctrine')]
-public Collection $orders;
+// 1. Alias (registered via Factory::withCollectionFactory)
+#[HasMany(target: Post::class, collection: 'doctrine')]
+public Collection $posts;
+
+// 2. Interface FQCN — factory matched via getInterface()
+#[HasMany(target: Post::class, collection: \Doctrine\Common\Collections\Collection::class)]
+public Collection $posts;
+
+// 3. Concrete collection class FQCN — withCollectionClass()
+#[HasMany(target: Post::class, collection: MyCustomCollection::class)]
+public MyCustomCollection $posts;
+
+// 4. null / omitted — default factory (ArrayCollectionFactory out of the box)
+#[HasMany(target: Post::class)]
+public array $posts = [];
 ```
 
-Details — built-in factories, registration via `Factory::withCollectionFactory()`, constructor initialization, `array` limitations under the proxy mapper — are in `collections.md`. M2M pivot access (`PivotedCollectionInterface`) lives there too.
+Collection-factory configuration (built-in `ArrayCollectionFactory`/`DoctrineCollectionFactory`/`IlluminateCollectionFactory`/`LoophpCollectionFactory`, registration via `Factory::withCollectionFactory()`, constructor initialization, M2M pivot access through `PivotedCollectionInterface`, `array` limitations under the proxy mapper, and setting `COLLECTION_TYPE` directly in a manually built schema) lives in the [[cycle-orm]] skill, `cycle-orm/resources/collections.md`.
 
 ---
 
@@ -418,7 +433,7 @@ foreach ($tags as $tag) {
 }
 ```
 
-With `collection: 'array'` or `'illuminate'`, pivot data is **lost** during hydration. API details and registration — `collections.md`.
+With `collection: 'array'` or `'illuminate'`, pivot data is **lost** during hydration. API details and registration — `cycle-orm/resources/collections.md`.
 
 ---
 
