@@ -8,7 +8,8 @@ See also:
 - STI/JTI inheritance → `inheritance.md`
 - indexes, composite PK, table-level FKs → `table-constraints.md`
 - value-objects without their own table → `embeddable.md` (an alternative to `#[Entity]`, not an addition)
-- custom mapper / repository / scope → `cycle-orm/resources/orm-extensions.md`
+- choosing a mapper for the entity (default / PromiseMapper / StdMapper / ClasslessMapper) → `cycle-orm/resources/mappers.md`
+- custom mapper / repository / scope (writing your own) → `cycle-orm/resources/orm-extensions.md`
 - schema problem diagnostics → `cycle-orm/resources/schema-troubleshooting.md`
 
 ## Minimum entity
@@ -49,7 +50,7 @@ The constraints below describe the behavior of the **default mapper** (`Cycle\OR
 
 At runtime the default mapper **subclasses the entity with a proxy class** (for lazy-load relations and dirty-tracking) and hydrates properties via reflection **bypassing the constructor** (the constructor is not called at all when an entity is hydrated from the DB). This leads to two prohibitions:
 
-**Forbidden:** `final` class. The proxy won't be able to extend it. (Lifted if you switch to a mapper that doesn't rely on proxy-inheritance.)
+**Forbidden:** `final` class. The proxy won't be able to extend it. Lifted by switching the mapper to `PromiseMapper` (which doesn't rely on proxy-inheritance) — see `cycle-orm/resources/mappers.md`.
 
 **Forbidden:** `readonly` properties (and `readonly class`, PHP 8.2+). The hydrator writes them via reflection bypassing the constructor — `readonly` forbids this, throwing `Error: Cannot modify readonly property`. Applies to all stock mappers, since they all hydrate via reflection.
 

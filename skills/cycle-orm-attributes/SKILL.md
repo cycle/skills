@@ -31,7 +31,7 @@ Defaults: role = lowercase class name without namespace (`user`), table = plural
 
 These errors silently pass schema compilation and only blow up at runtime:
 
-- **`final class` with the default mapper is forbidden.** `\Cycle\ORM\Mapper\Mapper` builds a proxy via `extends`. → `RuntimeException`.
+- **`final class` with the default mapper is forbidden.** `\Cycle\ORM\Mapper\Mapper` builds a proxy via `extends`. → `RuntimeException`. Lifted by switching the mapper to `PromiseMapper` — see `cycle-orm/resources/mappers.md`.
 - **`readonly` properties are forbidden.** The hydrator writes via reflection **after** the constructor. → `Error: Cannot modify readonly property`.
 - **The constructor is not invoked on load from DB.** No side effects in it (logs, events).
 - **A class with `#[Column]` but without `#[Entity]` is silently skipped by the locator.**
