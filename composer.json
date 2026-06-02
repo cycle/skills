@@ -32,9 +32,7 @@
     ],
     "extra": {
         "skills": {
-            "source": "skills",
-            "target": ".claude/skills",
-            "auto-sync": true
+            "source": "skills"
         }
     },
     "prefer-stable": true,
