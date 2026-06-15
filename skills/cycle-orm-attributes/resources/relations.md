@@ -1,6 +1,6 @@
 # Relations between entities
 
-Cycle supports **five** basic relation types, plus **three polymorphic** variants and `Embedded` for inline VOs (`embeddable.md`):
+Cycle supports **five** basic relation types, plus **four polymorphic** variants and `Embedded` for inline VOs (`embeddable.md`):
 
 | Relation           | Who holds the FK             | Cardinality              | When to use                                             |
 |--------------------|------------------------------|--------------------------|---------------------------------------------------------|
@@ -10,6 +10,7 @@ Cycle supports **five** basic relation types, plus **three polymorphic** variant
 | `RefersTo`         | **this** entity              | one → one (weak)         | like BelongsTo, but no cascade — soft reference         |
 | `ManyToMany`       | **pivot table**              | many → many              | "many-to-many" via `through`                            |
 | `BelongsToMorphed` | **this** + morph column      | one → one (polymorphic)  | "one owner from a set of unrelated types"               |
+| `RefersToMorphed`  | **this** + morph column      | one → one (polymorphic)  | like BelongsToMorphed, but deferred — breaks morph cycles |
 | `MorphedHasOne`    | **the other** + morph column | one → one (polymorphic)  | rare; a regular HasOne with a where is usually simpler  |
 | `MorphedHasMany`   | **the other** + morph column | one → many (polymorphic) | rare; a regular HasMany with a where is usually simpler |
 
@@ -29,7 +30,7 @@ You're describing side **A** (the side carrying the attribute). Side **B** is th
 
 - **many-to-many** (article ↔ tag, user ↔ role) → jump to step 4 (ManyToMany).
 - **one-to-one / one-to-many** (order → customer, customer → orders) → continue to step 2.
-- **target is heterogeneous** (Comment → Article | Photo | Video, picked at runtime) → use a polymorphic variant (`BelongsToMorphed` / `MorphedHasOne` / `MorphedHasMany`; see the "Polymorphic (morphed) relations" section below).
+- **target is heterogeneous** (Comment → Article | Photo | Video, picked at runtime) → use a polymorphic variant (`BelongsToMorphed` / `RefersToMorphed` / `MorphedHasOne` / `MorphedHasMany`; see the "Polymorphic (morphed) relations" section below).
 - **inline VO** (Address inside User, no separate table) → `#[Embedded]`, see `embeddable.md`.
 
 ### Step 2. Which table holds the FK column
@@ -63,6 +64,8 @@ Decide by **two questions**:
 | You need a soft reference: an FK without cascade management                                        | `RefersTo`                                      |
 
 Canonical cycle example: `Order.lastInvoice` + `Invoice.order`. `BelongsTo` on both sides → Cycle can't determine the insert order. Fix: turn one of the two into `RefersTo`.
+
+> The same cycle problem exists for **morphed** relations: `BelongsToMorphed` is also a hard dependency. To break a self-linked or cyclic morphed reference (`A → A`, `A → B → A`), use `RefersToMorphed` — the morphed counterpart of `RefersTo` (see the "Polymorphic (morphed) relations" section).
 
 ### Step 4. ManyToMany — via `through`
 
@@ -147,6 +150,7 @@ public ?Customer $customer = null;
 |--------------|--------------------------------------|--------------------------------------|
 | `BelongsTo`  | `{relationName}_{outerKey}`          | primary field name of target entity  |
 | `RefersTo`   | `{relationName}_{outerKey}`          | primary field name of target entity  |
+| `BelongsToMorphed` / `RefersToMorphed` | `{relationName}_{outerKey}` (+ `{relationName}_role` morphKey) | primary field name of target entity |
 | `HasOne`     | primary field name of own entity     | `{parentRole}_{innerKey}`            |
 | `HasMany`    | primary field name of own entity     | `{parentRole}_{innerKey}`            |
 | `ManyToMany` | primary field name of own entity     | primary field name of target entity  |
@@ -315,7 +319,7 @@ The schema builder validates the pair in `<Relation>::inverseRelation()` and thr
 
 ### Where `inverse:` is accepted but doesn't work
 
-`RefersTo`, `MorphedHasOne`, and `MorphedHasMany` accept the parameter in the annotation constructor, but the corresponding schema classes **don't implement `InversableInterface`**. The schema build fails with `SchemaException('Unable to inverse relation of type …')`. `Embedded` doesn't accept `inverse:` at all (`getInverse()` always returns `null`).
+`RefersTo`, `RefersToMorphed`, `MorphedHasOne`, and `MorphedHasMany` accept the parameter in the annotation constructor, but the corresponding schema classes **don't implement `InversableInterface`**. The schema build fails with `SchemaException('Unable to inverse relation of type …')`. `Embedded` doesn't accept `inverse:` at all (`getInverse()` always returns `null`).
 
 ### `inverse:` pitfalls
 
@@ -538,6 +542,26 @@ public function __construct(
 
 `indexCreate: true` creates a composite index on `[morphKey, innerKey]` — critically important for performance when looking up "all Comments of this Article".
 
+### `RefersToMorphed`
+
+"Like `BelongsToMorphed`, but a **soft/deferred** reference" — the morphed counterpart of `RefersTo`. Same columns (`innerKey` + `morphKey`, no FK), same constructor signature as `BelongsToMorphed`, but the ORM resolves the outer key in a deferred way (INSERT the row first, then a follow-up UPDATE).
+
+```php
+#[RefersToMorphed(
+    target: Commentable::class,
+    innerKey: 'parent_id',
+    morphKey: 'parent_role',
+)]
+public ?Commentable $parent = null;
+```
+
+**When to use it:** a **self-linked or cyclic morphed reference**. `BelongsToMorphed` (like `BelongsTo`) is a hard "parent before child" dependency, so a closed morphed cycle (`A → A`, or `A → B → A`) cannot be persisted in a single transaction — the pool deadlocks (`Pool has gone into an infinite loop`). `RefersToMorphed` breaks the cycle exactly as `RefersTo` does for non-morphed relations.
+
+- Available since `cycle/orm ^2.18` + `cycle/annotated ^4.6` (the `#[RefersToMorphed]` attribute). Relation type constant: `Relation::REFERS_TO_MORPHED`.
+- No FK is created (polymorphic target), just `innerKey` + `morphKey` + index — same as `BelongsToMorphed`.
+- Setting the property to `null` clears **both** the `innerKey` and the `morphKey` columns.
+- Not inversable (see the `Inverse` section) — like `RefersTo`.
+
 ### `MorphedHasOne` / `MorphedHasMany`
 
 The reverse sides: "I (Article) have many Comments, and they store me via a morph reference".
@@ -623,7 +647,7 @@ class Category
 - **"Relation not found"** — usually an incorrect `target:` (no such role/class in the schema). Verify that the target entity is under `#[Entity]` and reaches the locator.
 - **"Field `Entity`.`xxx` does not exists, referenced by …"** during schema build → `innerKey`/`outerKey`/`morphKey` references a name that isn't among the entity's fields. Most common cause: you wrote a **DB column name** instead of a **property name**. If property `$customerId` maps to column `customer_id`, `innerKey` must be `'customerId'`.
 - **FK column is duplicated in STI/JTI**: BelongsTo on the child + the column inherited from the parent → conflict. See `inheritance.md`.
-- **Cycle on insert (cyclic dependency)**: A → BelongsTo B, B → BelongsTo A. Cycle can't figure out the order. Break the cycle: on one of the sides use `RefersTo` (cascade: false), save B after A.
+- **Cycle on insert (cyclic dependency)**: A → BelongsTo B, B → BelongsTo A. Cycle can't figure out the order. Break the cycle: on one of the sides use `RefersTo` (cascade: false), save B after A. For a **morphed** cycle (`BelongsToMorphed` self/A→B→A) the symptom is `Pool has gone into an infinite loop` — break it with `RefersToMorphed`.
 - **`nullable: true` on a relation, but the column is not nullable** → hydration may crash on assigning `null`. Keep them in sync.
 - **CASCADE FK on an MSSQL identity column** → the schema won't compile. Solutions: `fkAction: 'NO ACTION'` or `fkCreate: false`. See `cycle-orm/resources/schema-troubleshooting.md`.
 - **Paired `BelongsTo` + `HasMany` both with default `fkCreate: true`** → both try to create an FK on the same column. DBAL deduplicates, but `fkAction`/`fkOnDelete` from the side rendered last wins — behavior becomes traversal-order-dependent. Fix: `fkCreate: false` on one side (typically on `HasOne`/`HasMany`).
