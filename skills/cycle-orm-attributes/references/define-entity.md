@@ -8,9 +8,9 @@ See also:
 - STI/JTI inheritance → `inheritance.md`
 - indexes, composite PK, table-level FKs → `table-constraints.md`
 - value-objects without their own table → `embeddable.md` (an alternative to `#[Entity]`, not an addition)
-- choosing a mapper for the entity (default / PromiseMapper / StdMapper / ClasslessMapper) → `cycle-orm/resources/mappers.md`
-- custom mapper / repository / scope (writing your own) → `cycle-orm/resources/orm-extensions.md`
-- schema problem diagnostics → `cycle-orm/resources/schema-troubleshooting.md`
+- choosing a mapper for the entity (default / PromiseMapper / StdMapper / ClasslessMapper) → `cycle-orm/references/mappers.md`
+- custom mapper / repository / scope (writing your own) → `cycle-orm/references/orm-extensions.md`
+- schema problem diagnostics → `cycle-orm/references/schema-troubleshooting.md`
 
 ## Minimum entity
 
@@ -47,7 +47,7 @@ The schema compiles fine with these mistakes; they surface at runtime, on the fi
 
 The constraints below describe the **default mapper** (`Cycle\ORM\Mapper\Mapper`), used whenever `#[Entity]` doesn't set `mapper:`. It **subclasses the entity with a proxy class** (for lazy-loaded relations) and hydrates properties through closures bound to the declaring class, **bypassing the constructor** (`orm/src/Mapper/Proxy/Hydrator/ClosureHydrator.php`). Any write error other than `TypeError` is **swallowed silently** (`ClosureHydrator.php:41-47,74-81`).
 
-**Forbidden:** `final` class. Throws ``RuntimeException("The entity `App\User` class is final and can't be extended.")`` on the first load or `make()` (`orm/src/Mapper/Proxy/ProxyEntityFactory.php:153-154`). Lifted by switching to `PromiseMapper`, which doesn't subclass the entity — see `cycle-orm/resources/mappers.md`.
+**Forbidden:** `final` class. Throws ``RuntimeException("The entity `App\User` class is final and can't be extended.")`` on the first load or `make()` (`orm/src/Mapper/Proxy/ProxyEntityFactory.php:153-154`). Lifted by switching to `PromiseMapper`, which doesn't subclass the entity — see `cycle-orm/references/mappers.md`.
 
 **Forbidden:** `readonly`. What breaks depends on the form:
 - `readonly class` (PHP 8.2+) → uncatchable fatal when the proxy is generated: `Non-readonly class ... Cycle ORM Proxy cannot extend readonly class ...`.
@@ -168,12 +168,12 @@ final class InvoiceFactory
 }
 ```
 
-`$orm->make()` bypasses the `private` constructor (instantiation goes through the mapper), registers the entity in the Heap, sets up proxies for relations and picks the right class for STI/JTI. Prefer it over bare `new` for new entities in general — see `cycle-orm/resources/entity-lifecycle.md`.
+`$orm->make()` bypasses the `private` constructor (instantiation goes through the mapper), registers the entity in the Heap, sets up proxies for relations and picks the right class for STI/JTI. Prefer it over bare `new` for new entities in general — see `cycle-orm/references/entity-lifecycle.md`.
 
 **Universal rules:**
 - **No side effects in the constructor** (logs, events, notifications). They will only run for the new-object scenario and not for entities loaded from the DB — the behavior becomes asymmetric.
 - Property visibility — any (`public`/`protected`/`private`). Reflection works regardless.
-- If you use the factory pattern — `repository:` is usually also custom (see `cycle-orm/resources/orm-extensions.md`); persisting via `$em->persist($invoice)` still works.
+- If you use the factory pattern — `repository:` is usually also custom (see `cycle-orm/references/orm-extensions.md`); persisting via `$em->persist($invoice)` still works.
 
 ## Full `#[Entity]` signature
 
@@ -200,9 +200,9 @@ There's also `source:` (`class-string<Cycle\ORM\Select\SourceInterface>`) — fo
 | `role`           | two entities with the same class name in different namespaces; relations reference entities by role. For modules, the typical convention is to prefix: `billing_invoice`, `mail_template` — namespacing via the role name instead of fighting collisions after the fact |
 | `table`          | the table name doesn't match the pluralized role, or the pluralizer gives the wrong result for irregular words (`Series`, `News`, domain terms) |
 | `database`       | multi-DB setup                                                                                          |
-| `repository`     | custom query methods are needed (`findActive()`, etc.) — see `cycle-orm/resources/orm-extensions.md`                          |
-| `mapper`         | non-standard hydration/dehydration, custom event model — see `cycle-orm/resources/orm-extensions.md`                          |
-| `scope`          | global condition on all queries (soft-delete, tenant filter) — see `cycle-orm/resources/orm-extensions.md`                    |
+| `repository`     | custom query methods are needed (`findActive()`, etc.) — see `cycle-orm/references/orm-extensions.md`                          |
+| `mapper`         | non-standard hydration/dehydration, custom event model — see `cycle-orm/references/orm-extensions.md`                          |
+| `scope`          | global condition on all queries (soft-delete, tenant filter) — see `cycle-orm/references/orm-extensions.md`                    |
 | `readonlySchema` | the table is created/managed externally, migrations shouldn't touch it                                  |
 | `typecast`       | you use a **custom** typecast handler class. The list replaces the built-in handler, so include `Typecast::class` too (or add it via schema defaults). Built-in rules and callables work without this option. See `column-types.md`. |
 
@@ -371,6 +371,6 @@ Pick one convention per project.
 3. There is a primary column: either one `#[Column(type: 'primary')]` / `primary: true`, or a composite PK via `#[Table(primary: new PrimaryKey(...))]`.
 4. The table name is what you expect (eyeball the pluralizer).
 5. The column declaration style (A or B) matches the project convention; if class-level, every `Column` has a correct `property:`.
-6. If you set `scope`/`repository`/`mapper` — the corresponding class implements the right interface from `cycle/orm` (see `cycle-orm/resources/orm-extensions.md`).
+6. If you set `scope`/`repository`/`mapper` — the corresponding class implements the right interface from `cycle/orm` (see `cycle-orm/references/orm-extensions.md`).
 7. Columns are described correctly (`column-types.md`), relations — separately (`relations.md`).
 8. For STI/JTI — the parent is marked with `#[DiscriminatorColumn]`/`#[SingleTable]`/`#[JoinedTable]` (`inheritance.md`).

@@ -3,7 +3,7 @@
 Which packages to install, which bootloaders/service providers to register, and how to assemble `ORM` for different frameworks. Covered in detail: Spiral (`spiral/cycle-bridge`, first-class by Cycle's authors), Yii3 (`yiisoft/yii-cycle`, official from the Yii team), and a standalone bootstrap. For Laravel / Symfony / everything else — a brief "Other frameworks" section with Packagist links.
 
 See also:
-- `EventDrivenCommandGenerator` (required for behaviors) — `cycle-orm-attributes/resources/behaviors.md`
+- `EventDrivenCommandGenerator` (required for behaviors) — `cycle-orm-attributes/references/behaviors.md`
 - get a repository / EntityManager after bootstrap → `repositories.md`
 - customizing mapper/scope/repository → `orm-extensions.md`
 - schema build fails / can't find entities → `schema-troubleshooting.md`
@@ -23,7 +23,7 @@ See also:
 | `cycle/schema-migrations-generator` | Diff between current schema and DB → generates migration classes.                                                         |
 | `cycle/schema-renderer`             | Renders the schema as text / dot / ascii (for the `cycle:render` command).                                                |
 | `cycle/entity-behavior`             | Behavior attributes: `#[CreatedAt]`, `#[UpdatedAt]`, `#[SoftDelete]`, `#[OptimisticLock]`, `#[Hook]`, `#[EventListener]`. |
-| `cycle/entity-behavior-uuid`        | UUID generators: `#[Uuid1]`..`#[Uuid7]`. Requires `ramsey/uuid`.                                                          |
+| `cycle/entity-behavior-uuid`        | UUID generators: `#[Uuid1]`..`#[Uuid7]`. Pulls in `ramsey/uuid` itself.                                                 |
 | `cycle/entity-behavior-identifier`  | Integration with `ramsey/identifier` (successor to `ramsey/uuid`: typed UUIDv7/ULID).                                     |
 | `cycle/orm-promise-mapper`          | Alternative mapper: promise wrappers (laminas-hydrator) instead of proxy-via-extends.                                     |
 | `cycle/active-record`               | Active Record on top of Cycle: `save()`/`delete()`/`findByPK()` on the entity itself.                                     |
@@ -99,9 +99,8 @@ protected const LOAD = [
    ```
    For UUID attributes also add:
    ```
-   composer require cycle/entity-behavior-uuid ramsey/uuid
+   composer require cycle/entity-behavior-uuid
    ```
-   (`ramsey/uuid` is not declared as a hard peer dependency, install it separately.)
 
 2. Register the bootloader in `Kernel::LOAD`:
    ```php
@@ -117,10 +116,10 @@ Order relative to `BridgeBootloader` doesn't matter — the binding must exist b
 
 ### Config
 
-You need two files: `app/config/database.php` (DBMS connections — shape, drivers, and connection variants live in `[[cycle-database]]/resources/installation.md`) and `app/config/cycle.php` (ORM specifics).
+You need two files: `app/config/database.php` (DBMS connections — shape, drivers, and connection variants live in `[[cycle-database]]/references/installation.md`) and `app/config/cycle.php` (ORM specifics).
 
 ```php
-// app/config/database.php — see [[cycle-database]]/resources/installation.md
+// app/config/database.php — see [[cycle-database]]/references/installation.md
 return [
     'default'   => 'default',
     'databases' => ['default' => ['connection' => 'postgres']],
@@ -281,7 +280,7 @@ use Cycle\Annotated\Locator\TokenizerEntityLocator;
 use Spiral\Tokenizer\ClassLocator;
 use Symfony\Component\Finder\Finder;
 
-// 1. DBAL — drivers / connection variants / read replicas: see [[cycle-database]]/resources/installation.md
+// 1. DBAL — drivers / connection variants / read replicas: see [[cycle-database]]/references/installation.md
 $dbal = new DatabaseManager(
     new Config\DatabaseConfig([
         'default'     => 'default',
@@ -452,12 +451,11 @@ Edge case: on MSSQL `GROUP BY` requires every selected column to be listed — t
 - **Schema cache in prod without invalidation on deploy** — you changed an Entity, deployed, but the cache is still stale → code uses new properties, schema is old → fatal/silent breakage. The deploy script must remove `cycle-schema.php` or clear the cache folder.
 - **`spiral/tokenizer` doesn't see entity classes** — you forgot to add the directory in `tokenizer.directories`. See `schema-troubleshooting.md` ("class doesn't show up in the schema").
 - **Conflict with `Doctrine\ORM\Mapping\Entity` import** — when migrating from Doctrine ORM, the IDE often slips in the old namespace. Cycle looks for `Cycle\Annotated\Annotation\Entity`. Verify imports in new files.
-- **`composer require cycle/entity-behavior-uuid` without `ramsey/uuid`** — the peer dependency is not hard-declared, install it separately.
 - **Package version compatibility:** the `cycle/*` family evolves in lockstep — after upgrading one package run `composer update "cycle/*"` across the board, otherwise you'll hit interface incompatibilities.
 - **Standalone bootstrap without `GenerateModifiers`/`RenderModifiers`** — behavior attributes don't modify the schema. They **must** be included in the `Compiler::compile()` pipeline, even if behaviors aren't used right now (for the future).
 - **`Annotated\Embeddings($classLocator)` / `Annotated\Entities($classLocator)` throw `TypeError`** — the constructors expect `Cycle\Annotated\Locator\EmbeddingLocatorInterface` / `EntityLocatorInterface`, not `Spiral\Tokenizer\ClassLocator` directly. Wrap them: `new TokenizerEmbeddingLocator($classLocator)` / `new TokenizerEntityLocator($classLocator)`.
 - **Standalone pipeline without `Generator\SyncTables` does not create tables in the DB** — `RenderTables` builds the schema in Registry, but tables only materialize through `SyncTables` (dev-only: immediate `CREATE/ALTER`) or through migrations (`cycle:migrate` + apply). Bootstrap runs cleanly, then you hit "no such table" — that step was missing.
-- **Cross-database setup** — Cycle supports multiple `database:` entries in one ORM. But FKs between them are impossible (see `cycle-orm-attributes/resources/relations.md`, `fkCreate: false`). Plan the boundaries.
+- **Cross-database setup** — Cycle supports multiple `database:` entries in one ORM. But FKs between them are impossible (see `cycle-orm-attributes/references/relations.md`, `fkCreate: false`). Plan the boundaries.
 - **Legacy code relies on "`unset($entity->collection)` = detach"** — this only holds with `ignoreUninitializedRelations = false` (the 2.12 default). Flipping the flag — or upgrading to the next major where it becomes `true` — turns `unset` into a no-op, and you must assign `$entity->collection = new ArrayCollection()` explicitly to clear. Audit partial-update tests before the upgrade.
 - **`LIMIT` with `load(..., method: JOIN)` returns a "torn" page** — without `groupByToDeduplicate` the duplicated root rows after a JOIN eat part of the page. Enable the flag when using the joined-load strategy together with pagination (`Select::limit()` / `offset()`).
 
@@ -466,7 +464,7 @@ Edge case: on MSSQL `GROUP BY` requires every selected column to be listed — t
 ### Spiral
 1. `composer require spiral/cycle-bridge` is installed.
 2. `BridgeBootloader` is in `Kernel::LOAD` (or a manual set of bootloaders).
-3. If behaviors are used — `Spiral\Cycle\Bootloader\EntityBehaviorBootloader` is added to `Kernel::LOAD` (separately, it's not in `BridgeBootloader`) + `cycle/entity-behavior` is installed (+ `cycle/entity-behavior-uuid` + `ramsey/uuid` for UUIDs).
+3. If behaviors are used — `Spiral\Cycle\Bootloader\EntityBehaviorBootloader` is added to `Kernel::LOAD` (separately, it's not in `BridgeBootloader`) + `cycle/entity-behavior` is installed (+ `cycle/entity-behavior-uuid` for UUIDs).
 4. `tokenizer.directories` contains the paths to entity classes.
 5. `database.php` / `cycle.php` are configured; in prod `schema.cache => true` + `TOKENIZER_CACHE_TARGETS=true` (both caches are invalidated on deploy), in dev — both `false`.
 6. Migrations via `cycle:migrate` + `migrate`, not `cycle:sync` (in prod).

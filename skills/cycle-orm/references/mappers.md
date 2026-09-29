@@ -25,8 +25,8 @@ All four extend the abstract `Cycle\ORM\Mapper\DatabaseMapper`, which implements
 - Supports STI via `SingleTableTrait` — on `init()` it inspects the discriminator column and picks the correct child class from `SchemaInterface::CHILDREN`.
 
 **Hard requirements on the entity class:**
-- `final class` — **forbidden** (the proxy cannot `extends`). → `RuntimeException` on first access.
-- `readonly` properties — **forbidden** (the hydrator writes via reflection AFTER instantiate). → `Error: Cannot modify readonly property`.
+- `final class` — **forbidden** (the proxy cannot `extends`). → ``RuntimeException("The entity `App\User` class is final and can't be extended.")`` on the first load or `make()` (`ProxyEntityFactory.php:153-154`).
+- `readonly` — **forbidden**. The hydrator swallows every write error except `TypeError` (`ClosureHydrator.php:41-47,74-81`): a `public readonly` property stays uninitialized, a `private readonly` one keeps its first value; a `readonly class` is a fatal on proxy generation.
 - The entity constructor is **not invoked** on load from DB — the proxy is created without `new YourEntity()`. No side effects in `__construct`.
 
 **What you observe at runtime:**
@@ -121,9 +121,9 @@ Without `ReferenceInterface` in the union for a lazy relation, the first hydrati
 
 ## Pitfalls
 
-- **`final class` + default Mapper** → `RuntimeException` on first access. Either drop `final` or switch to `PromiseMapper`.
+- **`final class` + default Mapper** → `RuntimeException` on the first load or `make()`. Either drop `final` or switch to `PromiseMapper`.
 - **Default Mapper + `new YourEntity()` + typed relation property without `?`/union** → an extra `SELECT` during persist (the mapper is forced to eager-resolve because it cannot place a `Reference` into a typed property). Workarounds — `$orm->make()`, a union with `ReferenceInterface`, or `PromiseMapper`. Full case — `entity-lifecycle.md`.
-- **`readonly` properties** → broken with all mappers (the hydrator writes via reflection after instantiate). External immutability — `protected`/`private` + getters.
+- **`readonly` properties** → under the default `Mapper` the hydrator silently skips the writes (see above). External immutability — `protected`/`private` + getters.
 - **PromiseMapper and `foreach ($entity->relation)`** — without `load('relation')`, the slot holds a `Promise`, not a collection. Fails on `Traversable`. Either `->fetch()` or eager-load.
 - **PromiseMapper + typed property without `ReferenceInterface`** — `TypeError` at hydration. Lazy-relation properties must be `ReferenceInterface|TargetType`. There is no automatic eager-query fallback.
 - **StdMapper + STI** — does not work in principle. If you need a hierarchy, take `Mapper`.

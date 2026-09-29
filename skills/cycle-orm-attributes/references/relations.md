@@ -111,7 +111,7 @@ class Customer
 }
 ```
 
-`Order::$customer_id` is the field that holds the FK (it maps to a same-named column in the `orders` table unless overridden via `#[Column(name: ...)]`). `Customer::$id` is the primary field that the FK references. The `#[BelongsTo]` attribute is on the Order side; the paired `#[HasMany]` is on the Customer side. The `innerKey`/`outerKey` parameters take **field (property) names**, not column names — see the "Keys: innerKey, outerKey" section.
+`Order::$customer_id` is the field that holds the FK (its column is the snake_case of the property name — here `customer_id` — unless overridden via `#[Column(name: ...)]`). `Customer::$id` is the primary field that the FK references. The `#[BelongsTo]` attribute is on the Order side; the paired `#[HasMany]` is on the Customer side. The `innerKey`/`outerKey` parameters take **field (property) names**, not column names — see the "Keys: innerKey, outerKey" section.
 
 **The mirror side is not required.** If you don't need to navigate to Orders from Customer — `#[HasMany]` can be omitted. Cycle doesn't break because of it.
 
@@ -119,7 +119,7 @@ class Customer
 
 ## Keys: innerKey, outerKey
 
-**`innerKey` and `outerKey` are entity field (property) names, not DB column names.** The column name is stored separately on the field — taken from `#[Column(name: ...)]` or (if not overridden) defaulting to the property name.
+**`innerKey` and `outerKey` are entity field (property) names, not DB column names.** The column name is stored separately on the field — taken from `#[Column(name: ...)]` or, if not overridden, the snake_case of the property name (`$customerId` → `customer_id`, `annotated/src/Configurator.php:257`).
 
 - **`innerKey`** — field name in **the same entity** where the attribute is declared (the "near side").
 - **`outerKey`** — field name in the **target entity** (the "far side").
@@ -136,8 +136,8 @@ public ?Customer $customer = null;
 ```
 
 ```php
-// Property = camelCase, column = snake_case → innerKey is ALWAYS the property name
-#[Column(type: 'int', name: 'customer_id', nullable: true)]
+// Property = camelCase, column = snake_case (automatic, no `name:` needed) → innerKey is ALWAYS the property name
+#[Column(type: 'int', nullable: true)]
 public ?int $customerId = null;
 
 #[BelongsTo(target: Customer::class, innerKey: 'customerId')]   // ← property name
@@ -280,7 +280,7 @@ $users = $orm->getRepository(User::class)->findAll();   // separate query
     ->run();                    // one query for orders + one for avatar across the whole set
 ```
 
-Details (LoadOptions, constraints — all entities must share the same role, full PKs must be in the Heap, STI/JTI not yet supported), real-world patterns, and the comparison with `Select::load()` — in `cycle-orm/resources/fetching.md`.
+Details (LoadOptions, constraints — all entities must share the same role, full PKs must be in the Heap, STI/JTI not yet supported), real-world patterns, and the comparison with `Select::load()` — in `cycle-orm/references/fetching.md`.
 
 ---
 
@@ -352,7 +352,7 @@ public MyCustomCollection $posts;
 public array $posts = [];
 ```
 
-Collection-factory configuration (built-in `ArrayCollectionFactory`/`DoctrineCollectionFactory`/`IlluminateCollectionFactory`/`LoophpCollectionFactory`, registration via `Factory::withCollectionFactory()`, constructor initialization, M2M pivot access through `PivotedCollectionInterface`, `array` limitations under the proxy mapper, and setting `COLLECTION_TYPE` directly in a manually built schema) lives in the [[cycle-orm]] skill, `cycle-orm/resources/collections.md`.
+Collection-factory configuration (built-in `ArrayCollectionFactory`/`DoctrineCollectionFactory`/`IlluminateCollectionFactory`/`LoophpCollectionFactory`, registration via `Factory::withCollectionFactory()`, constructor initialization, M2M pivot access through `PivotedCollectionInterface`, `array` limitations under the proxy mapper, and setting `COLLECTION_TYPE` directly in a manually built schema) lives in the [[cycle-orm]] skill, `cycle-orm/references/collections.md`.
 
 ---
 
@@ -375,7 +375,7 @@ You can constrain the relation with a condition on the target side:
 public array $paidOrders;
 ```
 
-On load Cycle appends `WHERE orders.status = 'paid' ORDER BY orders.create_time DESC` — `customerId`/`createTime` are translated into the `customer_id`/`create_time` columns through the `#[Column(name: ...)]` map. The condition is **permanent**, always applied to this relation.
+On load Cycle appends `WHERE orders.status = 'paid' ORDER BY orders.create_time DESC` — `customerId`/`createTime` are translated into the `customer_id`/`create_time` columns through the field→column map. The condition is **permanent**, always applied to this relation.
 
 Keys are **target-entity property names** (same rule as `innerKey`/`outerKey` — see the "Keys" section above). Dot-notation `relationName.field` is supported for conditions across JOINs — e.g. `where: ['customer.status' => 'active']`.
 
@@ -437,7 +437,7 @@ foreach ($tags as $tag) {
 }
 ```
 
-With `collection: 'array'` or `'illuminate'`, pivot data is **lost** during hydration. API details and registration — `cycle-orm/resources/collections.md`.
+With `collection: 'array'` or `'illuminate'`, pivot data is **lost** during hydration. API details and registration — `cycle-orm/references/collections.md`.
 
 ---
 
@@ -649,7 +649,7 @@ class Category
 - **FK column is duplicated in STI/JTI**: BelongsTo on the child + the column inherited from the parent → conflict. See `inheritance.md`.
 - **Cycle on insert (cyclic dependency)**: A → BelongsTo B, B → BelongsTo A. Cycle can't figure out the order. Break the cycle: on one of the sides use `RefersTo` (cascade: false), save B after A. For a **morphed** cycle (`BelongsToMorphed` self/A→B→A) the symptom is `Pool has gone into an infinite loop` — break it with `RefersToMorphed`.
 - **`nullable: true` on a relation, but the column is not nullable** → hydration may crash on assigning `null`. Keep them in sync.
-- **CASCADE FK on an MSSQL identity column** → the schema won't compile. Solutions: `fkAction: 'NO ACTION'` or `fkCreate: false`. See `cycle-orm/resources/schema-troubleshooting.md`.
+- **CASCADE FK on an MSSQL identity column** → the schema won't compile. Solutions: `fkAction: 'NO ACTION'` or `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
 - **Paired `BelongsTo` + `HasMany` both with default `fkCreate: true`** → both try to create an FK on the same column. DBAL deduplicates, but `fkAction`/`fkOnDelete` from the side rendered last wins — behavior becomes traversal-order-dependent. Fix: `fkCreate: false` on one side (typically on `HasOne`/`HasMany`).
 - **`$em->delete($parent)` didn't delete children — they're stuck in the DB (or the transaction fails with an FK violation)** → Cycle doesn't cascade DELETE itself; it relies on the FK's `ON DELETE CASCADE`. Check: `fkCreate: true` + `fkAction: 'CASCADE'` (or `fkOnDelete: 'CASCADE'`). With `fkCreate: false`, either delete children manually or use `fkOnDelete: 'SET NULL'` (+ `nullable: true` on the FK column).
 - **`through` entity has no PK** → Cycle can't identify a pivot row. The pivot must be a full-fledged entity.
@@ -668,7 +668,7 @@ class Category
 3. The FK column exists as `#[Column]` in the corresponding entity with the right type and `nullable`.
 4. `nullable:` on the relation is in sync with `nullable:` on the column and `?T` in the property type.
 5. `cascade:` is decided deliberately: `true` for owned relations, `false` for weak references and cycles.
-6. `fkCreate`/`fkAction`/`fkOnDelete` suit the driver (especially for MSSQL — see `cycle-orm/resources/schema-troubleshooting.md`).
+6. `fkCreate`/`fkAction`/`fkOnDelete` suit the driver (especially for MSSQL — see `cycle-orm/references/schema-troubleshooting.md`).
 7. `load:` — `'lazy'` by default; `'eager'` only when the relation is truly always needed.
 8. For ManyToMany — `through:` points to a full-fledged entity with a PK.
 9. If you don't control the mirror side — use `inverse:` to generate the reverse side.

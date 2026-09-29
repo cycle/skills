@@ -5,7 +5,7 @@ A deep dive into relation loading strategies and the surrounding infrastructure.
 See also:
 - `repositories.md` — Select WHERE/HAVING/JSON, EntityManager, pagination
 - `orm-extensions.md` — implementing custom `ScopeInterface`, `RepositoryInterface`
-- `cycle-orm-attributes/resources/relations.md` — declaring relations and the `load:` parameter on the attribute itself
+- `cycle-orm-attributes/references/relations.md` — declaring relations and the `load:` parameter on the attribute itself
 
 Reference sources:
 - https://cycle-orm.dev/docs/basic-select/current/en
@@ -189,7 +189,7 @@ Unlike Select-level `where()`, where dot-notation `relation.column` works by rel
 
 ### `loadSubclasses()` — STI/JTI
 
-For STI/JTI entities (`cycle-orm-attributes/resources/inheritance.md`) — control whether to load child-class fields:
+For STI/JTI entities (`cycle-orm-attributes/references/inheritance.md`) — control whether to load child-class fields:
 
 ```php
 $repo->select()->loadSubclasses(false);   // parent fields only

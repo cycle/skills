@@ -223,7 +223,7 @@ $repo->select()->loadSubclasses(false);   // parent fields only, no JOIN / discr
 
 The default is `true` — Cycle pulls in the discriminator and fields of all children. `false` makes sense when you deliberately work with parent fields only (lists, aggregations) and want to save on the JOIN/SELECT. Hydration then yields an instance of the parent class — `instanceof` of a child returns false.
 
-Details and pitfalls — `cycle-orm/resources/fetching.md` (`loadSubclasses()`).
+Details and pitfalls — `cycle-orm/references/fetching.md` (`loadSubclasses()`).
 
 ---
 
@@ -316,7 +316,7 @@ Beaver is a **standalone** entity with its own table `beavers`. It inherits PHP 
    - Child-specific columns are `nullable` or have a `default`.
 3. **JTI:**
    - Each child has `#[JoinedTable]`.
-   - The FK constraint works on the target driver (for MSSQL see `cycle-orm/resources/schema-troubleshooting.md`).
+   - The FK constraint works on the target driver (for MSSQL see `cycle-orm/references/schema-troubleshooting.md`).
 4. Multi-level (if needed): each level correctly extends the previous one; `markAsChildOfSingleTableInheritance` / FK chains work.
 5. Entities that extend an STI/JTI parent without their own `#[SingleTable]`/`#[JoinedTable]` (Concrete Table style) behave as regular entities — they are **not** a child in Cycle's inheritance sense.
 6. Trait relations correctly "land" in the declaring class via `getDeclaringClass()` — verified by a test that they aren't duplicated in JTI children.

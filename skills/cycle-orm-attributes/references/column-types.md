@@ -7,7 +7,7 @@ See also:
 - indexes / composite PK / manual FKs at the table level → `table-constraints.md`
 - `#[Column]` for an FK column for a relation → `relations.md`
 - Embeddable as an alternative to JSON-VO → `embeddable.md`
-- **in-depth typecast work** (custom classes, `CompositeTypecast`, JSON-VO pattern) → `cycle-orm/resources/typecasters-advanced.md`
+- **in-depth typecast work** (custom classes, `CompositeTypecast`, JSON-VO pattern) → `cycle-orm/references/typecasters-advanced.md`
 
 ## Minimum
 
@@ -296,7 +296,7 @@ Cycle stores data in the DB as strings/numbers. In a PHP entity they must be tur
 
 ## Automatic rules
 
-`Cycle\Schema\Generator\GenerateTypecast` — part of the standard Compiler pipeline (`cycle-orm/resources/installation.md`) — assigns a rule to every column **without** `typecast:`, based on the column type in the table schema (`schema-builder/src/Generator/GenerateTypecast.php:40-68`):
+`Cycle\Schema\Generator\GenerateTypecast` — part of the standard Compiler pipeline (`cycle-orm/references/installation.md`) — assigns a rule to every column **without** `typecast:`, based on the column type in the table schema (`schema-builder/src/Generator/GenerateTypecast.php:40-68`):
 
 | Column type                                  | Inferred rule |
 |----------------------------------------------|---------------|
@@ -387,7 +387,7 @@ For **uncast** nothing needs to be configured — DBAL converts a `BackedEnum` t
 - **Value Objects** (`Money`, `Address`, `BillingInterval`) — need a custom typecast class.
 - **Complex logic** (timezone-conversion, decimal precision, multi-arg formats) — callable or class.
 
-For all that — **read `cycle-orm/resources/typecasters-advanced.md`**. It covers:
+For all that — **read `cycle-orm/references/typecasters-advanced.md`**. It covers:
 - callable typecast (3 forms: 1-arg, with DatabaseInterface, with extra arguments),
 - custom typecast classes via `CastableInterface`/`UncastableInterface`,
 - `CompositeTypecast` (a chain of handlers),

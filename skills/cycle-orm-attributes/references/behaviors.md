@@ -5,7 +5,7 @@ Attributes from the `cycle/entity-behavior` package (timestamps, soft-delete, op
 See also:
 - the entity itself (where the attribute goes) → `define-entity.md`
 - columns created/used by behaviours (datetime, uuid, version) → `column-types.md`
-- alternative: soft-delete manually via Mapper + Scope → `cycle-orm/resources/orm-extensions.md`
+- alternative: soft-delete manually via Mapper + Scope → `cycle-orm/references/orm-extensions.md`
 
 ---
 
@@ -38,7 +38,7 @@ $orm = new ORM(
 
 ## Built-in behaviours: timestamps, soft-delete, optimistic lock
 
-> **About field naming in the examples below.** Package defaults are `field: 'createdAt'` / `'updatedAt'` / `'deletedAt'` (camelCase property, snake_case column via the `_at` suffix). The examples below **override** `field:`/`column:` to AIP-compatible `createTime`/`create_time` etc. (Google AIP: timestamp fields are `*Time`/`*_time`). Without `field:`/`column:` the package defaults kick in — if you want AIP, the override is required.
+> **About field naming in the examples below.** Package defaults are `field: 'createdAt'` / `'updatedAt'` / `'deletedAt'`. Column resolution (`entity-behavior/src/Schema/RegistryModifier.php:270-277`): explicit `column:` → else the column of an existing `#[Column]` property with that field name (snake_case via `cycle/annotated`, e.g. `created_at`) → else the **field name verbatim** (`createdAt`). So without `column:` and without a declared property, the column is camelCase. The examples below **override** `field:`/`column:` to AIP-compatible `createTime`/`create_time` etc. (Google AIP: timestamp fields are `*Time`/`*_time`). Without `field:`/`column:` the package defaults kick in — if you want AIP, the override is required.
 
 ### `#[CreatedAt]` — creation date
 
@@ -48,7 +48,7 @@ use Cycle\ORM\Entity\Behavior\CreatedAt;
 #[Entity]
 #[CreatedAt(
     field: 'createTime',         // package default: 'createdAt'
-    column: 'create_time',       // package default: derived from field ('created_at')
+    column: 'create_time',       // without it: the declared property's column, else 'createTime' verbatim
 )]
 class User
 {
@@ -69,7 +69,7 @@ class User
 use Cycle\ORM\Entity\Behavior\UpdatedAt;
 
 #[Entity]
-#[UpdatedAt(field: 'updateTime', column: 'update_time', nullable: false)]   // package defaults: 'updatedAt'/'updated_at'
+#[UpdatedAt(field: 'updateTime', column: 'update_time', nullable: false)]   // package default field: 'updatedAt' (column 'updatedAt' unless the property is declared)
 class User
 {
     // ...
@@ -86,7 +86,7 @@ class User
 use Cycle\ORM\Entity\Behavior\SoftDelete;
 
 #[Entity]
-#[SoftDelete(field: 'deleteTime', column: 'delete_time')]   // package defaults: 'deletedAt'/'deleted_at'
+#[SoftDelete(field: 'deleteTime', column: 'delete_time')]   // package default field: 'deletedAt' (column 'deletedAt' unless the property is declared)
 class Article
 {
     // ...
@@ -98,7 +98,7 @@ On `$em->delete($article)->run()`, instead of SQL `DELETE`, an `UPDATE ... SET d
 
 **Important:** `SoftDelete` **does not fire Update events** for this "deletion" (by package design — see PHPdoc of `SoftDelete.php`). If you have `#[Hook(events: OnUpdate::class)]` attached — soft-delete doesn't trigger them. This is not a bug, but an intentional separation of "logical deletion ≠ regular update".
 
-**Pitfall:** the behaviour **doesn't add an automatic WHERE filter** on reads. To hide soft-deleted records you need a separate Scope (`cycle-orm/resources/orm-extensions.md`):
+**Pitfall:** the behaviour **doesn't add an automatic WHERE filter** on reads. To hide soft-deleted records you need a separate Scope (`cycle-orm/references/orm-extensions.md`):
 ```php
 class NotDeletedScope implements ScopeInterface
 {
@@ -311,8 +311,6 @@ Available variants — by UUID version:
 
 **Pitfall:** the typecast is registered by the behaviour automatically. **Don't duplicate** `typecast: [Uuid::class, 'fromString']` in `#[Column]` by hand — it'll be a double cast and/or an error ("unknown rule" if out of sync).
 
-**Pitfall:** requires `composer require ramsey/uuid` (the uuid package is a peer dependency). Without it — `Class 'Ramsey\Uuid\Uuid' not found`.
-
 ---
 
 ## Custom behaviour — your own `BaseModifier`
@@ -335,14 +333,13 @@ This is a rare need — usually `Hook` or `EventListener` covers everything.
 - **`SoftDelete` doesn't fire `OnUpdate`** — listeners on update don't see the soft-delete. If you need an audit of soft-delete — listen to `OnDelete` (it's dispatched on logical delete too).
 - **`OptimisticLock` + custom Mapper without `parent::queueUpdate()`** — the version won't update, the lock breaks.
 - **`Uuid*` + manual `typecast`** — double cast / unknown rule. The behaviour sets the typecast itself.
-- **`Uuid*` without `ramsey/uuid`** — the package isn't formally peer-required, you must install it manually.
 - **Behaviour columns + a manual `#[Column]` with a different type** — `BehaviorCompilationException` ("field is not of the correct type"). Either trust the behaviour to create the column, or describe it with an exactly compatible type.
 - **`#[EventListener]` writes to a state column that's not in the schema** — runtime SQL error. The listener doesn't create columns; use Hook + declare the column, or write your own `BaseModifier` attribute.
 - **Hook on the parent entity of STI/JTI** (`inheritance.md`) — inherited by children (a class attribute is visible via reflection). Sometimes that's what you want, sometimes not — keep this in mind.
 
 ## Checklist
 
-1. `composer require cycle/entity-behavior` (+ `cycle/entity-behavior-uuid`, `ramsey/uuid` if you need UUID).
+1. `composer require cycle/entity-behavior` (+ `cycle/entity-behavior-uuid` if you need UUID).
 2. `EventDrivenCommandGenerator` is passed in the bootstrap to `ORM::__construct` — without it the attributes are dead.
 3. The correct attribute is chosen for timestamps: `#[CreatedAt]` (create only), `#[UpdatedAt]` (create+update), `#[SoftDelete]` (DELETE → UPDATE).
 4. For soft-delete, a `Scope` is registered next to `#[SoftDelete]`, hiding deleted records.

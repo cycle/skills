@@ -90,7 +90,7 @@ For a composite unique:
 Typically — don't. Cycle generates the name automatically by convention. The name is needed explicitly if:
 - your migrations are diffed by an external tool and name stability matters,
 - you want to DROP INDEX by name from the application,
-- the automatic name is too long (for example, PostgreSQL has a 63-character limit on an identifier).
+- you need the same name in every environment — the generated one contains a random `uniqid()` part (see below).
 
 ---
 
@@ -194,11 +194,9 @@ public string $currency_code;
 
 ## Names of indexes and FKs: what Cycle generates
 
-By default Cycle/cycle-database generates names by its own convention — something like `{table}_{columns}_idx` and `{table}_{columns}_fk`. On different DBs the format differs slightly.
+The generated name is `{table}_index_{columns}_{uniqid()}` for indexes and `{table}_foreign_{columns}_{uniqid()}` for FKs; a name longer than 64 characters is replaced with its `md5()` (`database/src/Schema/AbstractTable.php:885-905`). So names never exceed identifier limits, but they are **not deterministic**: a fresh schema build in another environment produces different names.
 
 **Don't rely on a specific generated name** when writing migrations by hand. If migrations are via `cycle/migrations` — it'll handle it. If you write by hand — set `name:` explicitly.
-
-**PostgreSQL has a 63-character limit on identifiers** — long table names + long column names yield long index names exceeding the limit, and PG silently truncates them. To avoid surprises on long names — set `name:` by hand.
 
 ---
 
@@ -210,8 +208,7 @@ By default Cycle/cycle-database generates names by its own convention — someth
 - **Changing column order in an index** requires recreating the index in a migration — it's a **different** index from the query planner's perspective.
 - **`#[ForeignKey]` to a non-existent column** — crashes at schema build (`UndefinedFieldException`).
 - **`action: 'SET NULL'` on an FK + non-nullable column** — crashes when trying to SET NULL. The column must be `nullable: true`.
-- **CASCADE FK on an MSSQL identity column** — forbidden by SQL Server itself. Use `'NO ACTION'` or `fkCreate: false`. See `cycle-orm/resources/schema-troubleshooting.md`.
-- **PG index names > 63 characters** — silently truncated. Set the name by hand.
+- **CASCADE FK on an MSSQL identity column** — forbidden by SQL Server itself. Use `'NO ACTION'` or `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
 - **The `#[Index]` attribute goes in `#[Table(indexes: [new Index(...)])]` OR directly on the class** — but not in both places at once for the same index.
 
 ## Checklist
@@ -222,5 +219,4 @@ By default Cycle/cycle-database generates names by its own convention — someth
 4. Composite PK via `#[Table(primary: new PrimaryKey(...))]`; ordinary columns inside it — not `primary`/`bigPrimary`.
 5. FKs via relations (`relations.md`) are preferable to `#[ForeignKey]` — if you navigate to the target entity in code.
 6. `#[ForeignKey]` with `action: 'SET NULL'` — the corresponding column is nullable.
-7. On MSSQL — no CASCADE FKs on identity columns (`cycle-orm/resources/schema-troubleshooting.md`).
-8. Long PG index names — overridden via `name:`.
+7. On MSSQL — no CASCADE FKs on identity columns (`cycle-orm/references/schema-troubleshooting.md`).

@@ -38,7 +38,7 @@ See also:
 - the owning entity itself → `define-entity.md`
 - columns that will be embedded → `column-types.md`
 - `#[Embedded]` as a relation → `relations.md`
-- alternative via JSON-VO → `cycle-orm/resources/typecasters-advanced.md`
+- alternative via JSON-VO → `cycle-orm/references/typecasters-advanced.md`
 
 ---
 
@@ -46,7 +46,7 @@ See also:
 
 ```php
 #[Embeddable(
-    role: 'address',                 // as with Entity; default = lowercase class name
+    role: 'address',                 // as with Entity; default = camelCase short class name (`BillingAddress` → `billingAddress`)
     mapper: AddressMapper::class,    // usually not needed
     columnPrefix: 'addr_',           // prefix for columns when embedded; default ''
     columns: [/* class-level style */],
@@ -129,7 +129,7 @@ public Address $address;
    $repo->select()->load('address')->wherePK($id)->fetchOne();
 
    // (b) on an already-fetched set: BulkLoader
-   //     (details — cycle-orm/resources/fetching.md)
+   //     (details — cycle-orm/references/fetching.md)
    $customers = $repo->findAll();
    (new \Cycle\ORM\Relation\BulkLoader($orm))
        ->collect(...$customers)
@@ -146,7 +146,7 @@ public Address $address;
 
 This is a common dilemma. Two scenarios:
 
-| Aspect                          | Embeddable                          | JSON-VO + typecast (`cycle-orm/resources/typecasters-advanced.md`) |
+| Aspect                          | Embeddable                          | JSON-VO + typecast (`cycle-orm/references/typecasters-advanced.md`) |
 |---------------------------------|-------------------------------------|--------------------------------------------|
 | Where it's stored               | separate columns of the parent table | a single `jsonb`/`json` column            |
 | Indexing by VO field            | standard column index               | jsonb index by path (PG only)              |
@@ -201,7 +201,7 @@ Useful in DDD style when the VO shouldn't have ORM attributes on its properties.
 ## Common pitfalls
 
 - **Two Embedded of the same type without `prefix:`** — columns collide, the schema crashes. Use `columnPrefix` in Embeddable or `prefix:` in Embedded.
-- **`final readonly class` on an Embeddable** — forbidden for the same reasons as for Entity (hydration via reflection). If you want an immutable VO — go with a JSON-typecast VO (`cycle-orm/resources/typecasters-advanced.md`).
+- **`final readonly class` on an Embeddable** — forbidden for the same reasons as for Entity (hydration via reflection). If you want an immutable VO — go with a JSON-typecast VO (`cycle-orm/references/typecasters-advanced.md`).
 - **Embeddable with a PK** — no, it's not an entity, it never has its own PK.
 - **`load: 'lazy'` on `#[Embedded]` without an explicit `->load('name')`** — `TypeError: Cannot assign null to property of type X` on first property access. Embedded columns drop out of the root SELECT and there's no auto-load on access. Loading is explicit-only: `->load('name')` on Select, or `BulkLoader` on an already-fetched set.
 - **Changing the Embeddable schema** — migrate the tables of **all** entities it's embedded into. Embeddable has no table of its own to migrate.

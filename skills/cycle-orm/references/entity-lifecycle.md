@@ -3,9 +3,9 @@
 The entity lifecycle at runtime: **creation → tracking in the Heap → persist → delete**. This file covers correct creation (`$orm->make()` vs bare `new`), writing (`$em->persist/run`), deletion and transactions. Reading (`Select`, repository methods) lives in [repositories.md](repositories.md).
 
 See also:
-- relations and their `cascade` — `cycle-orm-attributes/resources/relations.md`
+- relations and their `cascade` — `cycle-orm-attributes/references/relations.md`
 - custom mapper (your own `init`/`hydrate`) — `orm-extensions.md`
-- soft-delete as a scope — `orm-extensions.md`; as a behavior — `cycle-orm-attributes/resources/behaviors.md`
+- soft-delete as a scope — `orm-extensions.md`; as a behavior — `cycle-orm-attributes/references/behaviors.md`
 
 ---
 
@@ -216,7 +216,7 @@ In 95% of cases you want plain `persist`. `persistState` covers the niche of "fr
 
 ### `cascade`
 
-`persist($entity, cascade: true)` also queues related entities — those relations whose attribute has `cascade: true` set (see `cycle-orm-attributes/resources/relations.md`). With `cascade: false` only `$entity` itself is processed; related ones must be `persist`-ed separately.
+`persist($entity, cascade: true)` also queues related entities — those relations whose attribute has `cascade: true` set (see `cycle-orm-attributes/references/relations.md`). With `cascade: false` only `$entity` itself is processed; related ones must be `persist`-ed separately.
 
 `delete($entity, cascade: true)` — same idea for deletes (assuming the relation supports cascade-delete at the FK or model level).
 
@@ -230,7 +230,7 @@ $em->delete($user)->run();
 
 There's no built-in **soft-delete** API — assemble it from parts:
 
-1. **`SoftDelete` behavior** (`cycle/entity-behavior`) — adds a `deleted_at` column and writes a timestamp instead of a real DELETE. See `cycle-orm-attributes/resources/behaviors.md`.
+1. **`SoftDelete` behavior** (`cycle/entity-behavior`) — adds a timestamp column (`deletedAt` by default, or the column of a declared property — set `column:` for `deleted_at`) and writes a timestamp instead of a real DELETE. See `cycle-orm-attributes/references/behaviors.md`.
 2. **Reads with a `deleted_at` filter** — two options, not mutually exclusive:
    - **Scope on the entity** — a global filter that hides "deleted" rows in every Select automatically (`#[Entity(scope: NotDeletedScope::class)]`). Applies to all queries without anyone remembering to. See `orm-extensions.md`.
    - **Scope methods on a custom repository** — clone the repository, layer a condition onto its inner `Select`, and return the new repository. This is exactly how the built-in `forUpdate(): static` works. Visible in code, chainable, and repository-level methods (`findAll`/`findOne`/`findByPK`) immediately respect the filter.

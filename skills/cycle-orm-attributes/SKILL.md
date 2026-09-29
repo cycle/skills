@@ -31,7 +31,7 @@ Defaults: role = camelCase short class name (`billingInvoice`), table = snake_ca
 
 These errors silently pass schema compilation and only blow up at runtime:
 
-- **`final class` with the default mapper is forbidden.** `\Cycle\ORM\Mapper\Mapper` builds a proxy via `extends` → `RuntimeException` on the first load/`make()`. Lifted by switching the mapper to `PromiseMapper` — see `cycle-orm/resources/mappers.md`.
+- **`final class` with the default mapper is forbidden.** `\Cycle\ORM\Mapper\Mapper` builds a proxy via `extends` → `RuntimeException` on the first load/`make()`. Lifted by switching the mapper to `PromiseMapper` — see `cycle-orm/references/mappers.md`.
 - **`readonly` is forbidden.** `readonly class` → fatal on proxy generation; `readonly` properties → the hydrator's writes are silently skipped, leaving them uninitialized or stale.
 - **The constructor is not invoked on load from DB.** No side effects in it (logs, events).
 - **A class with `#[Column]` but without `#[Entity]` is silently skipped by the locator.**
@@ -39,30 +39,30 @@ These errors silently pass schema compilation and only blow up at runtime:
 
 External immutability — via `protected`/`private` + getters.
 
-## Index — what goes where (resources/)
+## Index — what goes where (references/)
 
 Load files by task trigger. Each is self-contained, with its own minimum, decision tree, pitfalls, and checklist.
 
-- `resources/define-entity.md` — creating a new entity, choosing role/repository/mapper/scope, two declaration styles (property-level vs class-level), private constructor + Factory, composite PK.
-- `resources/column-types.md` — describing a column: types, defaults, `length`/`precision`/`unsigned`, PG/MSSQL-specific, identifier strategies (UUID/ULID/snowflake), `GeneratedValue`, **typecast** (int/bool/float/datetime/json + BackedEnum).
-- `resources/relations.md` — association between entities: HasOne/HasMany/BelongsTo/RefersTo/ManyToMany, `innerKey`/`outerKey`, FK behaviour, cascade, nullable, lazy/eager, `Inverse`, pivot `through`, the `collection:` parameter (alias/FQCN), **polymorphic** relations.
-- `resources/inheritance.md` — class hierarchy: STI (`#[SingleTable]`/`#[DiscriminatorColumn]`) vs JTI (`#[JoinedTable]`), traits, multi-level, standalone entity extending an STI child.
-- `resources/embeddable.md` — value-object as parent columns (`#[Embeddable]` + `#[Embedded]`), `columnPrefix`/`prefix:`, comparison with JSON-VO.
-- `resources/table-constraints.md` — indexes (`#[Index]`, composite, unique), composite PK via `#[PrimaryKey]`, manual FK without a relation (`#[ForeignKey]`).
-- `resources/behaviors.md` — `cycle/entity-behavior` and `cycle/entity-behavior-uuid`: declarative `#[CreatedAt]`/`#[UpdatedAt]`/`#[SoftDelete]`/`#[OptimisticLock]`, lifecycle hooks via `#[Hook]` (callable) and `#[EventListener]` + `#[Listen]` (class), `OnCreate`/`OnUpdate`/`OnDelete` events, UUID generators `#[Uuid1]`...`#[Uuid7]`. Requires `EventDrivenCommandGenerator` in bootstrap.
+- `references/define-entity.md` — creating a new entity, choosing role/repository/mapper/scope, two declaration styles (property-level vs class-level), private constructor + Factory, composite PK.
+- `references/column-types.md` — describing a column: types, defaults, `length`/`precision`/`unsigned`, PG/MSSQL-specific, identifier strategies (UUID/ULID/snowflake), `GeneratedValue`, **typecast** (int/bool/float/datetime/json + BackedEnum).
+- `references/relations.md` — association between entities: HasOne/HasMany/BelongsTo/RefersTo/ManyToMany, `innerKey`/`outerKey`, FK behaviour, cascade, nullable, lazy/eager, `Inverse`, pivot `through`, the `collection:` parameter (alias/FQCN), **polymorphic** relations.
+- `references/inheritance.md` — class hierarchy: STI (`#[SingleTable]`/`#[DiscriminatorColumn]`) vs JTI (`#[JoinedTable]`), traits, multi-level, standalone entity extending an STI child.
+- `references/embeddable.md` — value-object as parent columns (`#[Embeddable]` + `#[Embedded]`), `columnPrefix`/`prefix:`, comparison with JSON-VO.
+- `references/table-constraints.md` — indexes (`#[Index]`, composite, unique), composite PK via `#[PrimaryKey]`, manual FK without a relation (`#[ForeignKey]`).
+- `references/behaviors.md` — `cycle/entity-behavior` and `cycle/entity-behavior-uuid`: declarative `#[CreatedAt]`/`#[UpdatedAt]`/`#[SoftDelete]`/`#[OptimisticLock]`, lifecycle hooks via `#[Hook]` (callable) and `#[EventListener]` + `#[Listen]` (class), `OnCreate`/`OnUpdate`/`OnDelete` events, UUID generators `#[Uuid1]`...`#[Uuid7]`. Requires `EventDrivenCommandGenerator` in bootstrap.
 
 ## Where to go beyond this skill
 
-- Queries and saving (Select / EntityManager / `persist`/`run` / pagination / `forUpdate`) → skill `cycle-orm`, `resources/repositories.md`.
-- Choosing a mapper (default `Mapper` vs `PromiseMapper` vs `StdMapper` vs `ClasslessMapper`) → skill `cycle-orm`, `resources/mappers.md`.
-- Custom Repository / Scope / Mapper (writing your own) → skill `cycle-orm`, `resources/orm-extensions.md`.
-- Custom typecast handlers (`CastableInterface`/`UncastableInterface`/`CompositeTypecast`, JSON-VO pattern) → skill `cycle-orm`, `resources/typecasters-advanced.md`.
-- Schema-build and runtime-error diagnostics ("Undefined schema ... not found", MSSQL CASCADE, JTI duplication, readonly properties left uninitialized, "unknown rule") → skill `cycle-orm`, `resources/schema-troubleshooting.md`.
+- Queries and saving (Select / EntityManager / `persist`/`run` / pagination / `forUpdate`) → skill `cycle-orm`, `references/repositories.md`.
+- Choosing a mapper (default `Mapper` vs `PromiseMapper` vs `StdMapper` vs `ClasslessMapper`) → skill `cycle-orm`, `references/mappers.md`.
+- Custom Repository / Scope / Mapper (writing your own) → skill `cycle-orm`, `references/orm-extensions.md`.
+- Custom typecast handlers (`CastableInterface`/`UncastableInterface`/`CompositeTypecast`, JSON-VO pattern) → skill `cycle-orm`, `references/typecasters-advanced.md`.
+- Schema-build and runtime-error diagnostics ("Undefined schema ... not found", MSSQL CASCADE, JTI duplication, readonly properties left uninitialized, "unknown rule") → skill `cycle-orm`, `references/schema-troubleshooting.md`.
 
-## Conventions inside resources/
+## Conventions inside references/
 
 - Cross-references **within** this skill — relative paths (`relations.md`).
-- Cross-references **to another skill** — `<skill-name>/resources/<file>.md` (e.g. `cycle-orm/resources/repositories.md`).
+- Cross-references **to another skill** — `<skill-name>/references/<file>.md` (e.g. `cycle-orm/references/repositories.md`).
 - PHP attributes only. Doctrine docblock annotations are not covered.
 - Common pitfalls collected in a single section at the end of each file.
 - Checklist at the end — actionable, not a rehash of the body.
