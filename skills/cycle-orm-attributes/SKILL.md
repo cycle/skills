@@ -25,19 +25,19 @@ class User
 }
 ```
 
-Defaults: role = lowercase class name without namespace (`user`), table = pluralization (`users`), database = default from DBAL, mapper/repository/scope — Cycle standards.
+Defaults: role = camelCase short class name (`billingInvoice`), table = snake_case plural (`billing_invoices`), column = snake_case property name (`customer_id`), typecast = inferred from the column type (int/bool/float/datetime), database = default from DBAL, mapper/repository/scope — Cycle standards.
 
 ## Hard constraints on entity classes (ALWAYS read)
 
 These errors silently pass schema compilation and only blow up at runtime:
 
-- **`final class` with the default mapper is forbidden.** `\Cycle\ORM\Mapper\Mapper` builds a proxy via `extends`. → `RuntimeException`. Lifted by switching the mapper to `PromiseMapper` — see `cycle-orm/resources/mappers.md`.
-- **`readonly` properties are forbidden.** The hydrator writes via reflection **after** the constructor. → `Error: Cannot modify readonly property`.
+- **`final class` with the default mapper is forbidden.** `\Cycle\ORM\Mapper\Mapper` builds a proxy via `extends` → `RuntimeException` on the first load/`make()`. Lifted by switching the mapper to `PromiseMapper` — see `cycle-orm/resources/mappers.md`.
+- **`readonly` is forbidden.** `readonly class` → fatal on proxy generation; `readonly` properties → the hydrator's writes are silently skipped, leaving them uninitialized or stale.
 - **The constructor is not invoked on load from DB.** No side effects in it (logs, events).
 - **A class with `#[Column]` but without `#[Entity]` is silently skipped by the locator.**
-- **At least one primary column is required** (`type: 'primary'`/`'bigPrimary'` or `primary: true`).
+- **At least one primary column is required** (`type: 'primary'`/`'bigPrimary'` or `primary: true`). Without it the entity is silently dropped from the schema.
 
-External immutability — via `protected`/`private` + getters, not via `readonly`.
+External immutability — via `protected`/`private` + getters.
 
 ## Index — what goes where (resources/)
 
@@ -50,6 +50,14 @@ Load files by task trigger. Each is self-contained, with its own minimum, decisi
 - `resources/embeddable.md` — value-object as parent columns (`#[Embeddable]` + `#[Embedded]`), `columnPrefix`/`prefix:`, comparison with JSON-VO.
 - `resources/table-constraints.md` — indexes (`#[Index]`, composite, unique), composite PK via `#[PrimaryKey]`, manual FK without a relation (`#[ForeignKey]`).
 - `resources/behaviors.md` — `cycle/entity-behavior` and `cycle/entity-behavior-uuid`: declarative `#[CreatedAt]`/`#[UpdatedAt]`/`#[SoftDelete]`/`#[OptimisticLock]`, lifecycle hooks via `#[Hook]` (callable) and `#[EventListener]` + `#[Listen]` (class), `OnCreate`/`OnUpdate`/`OnDelete` events, UUID generators `#[Uuid1]`...`#[Uuid7]`. Requires `EventDrivenCommandGenerator` in bootstrap.
+
+## Where to go beyond this skill
+
+- Queries and saving (Select / EntityManager / `persist`/`run` / pagination / `forUpdate`) → skill `cycle-orm`, `resources/repositories.md`.
+- Choosing a mapper (default `Mapper` vs `PromiseMapper` vs `StdMapper` vs `ClasslessMapper`) → skill `cycle-orm`, `resources/mappers.md`.
+- Custom Repository / Scope / Mapper (writing your own) → skill `cycle-orm`, `resources/orm-extensions.md`.
+- Custom typecast handlers (`CastableInterface`/`UncastableInterface`/`CompositeTypecast`, JSON-VO pattern) → skill `cycle-orm`, `resources/typecasters-advanced.md`.
+- Schema-build and runtime-error diagnostics ("Undefined schema ... not found", MSSQL CASCADE, JTI duplication, readonly properties left uninitialized, "unknown rule") → skill `cycle-orm`, `resources/schema-troubleshooting.md`.
 
 ## Conventions inside resources/
 

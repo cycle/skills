@@ -540,7 +540,7 @@ public function __construct(
 
 **FK constraint is absent.** A polymorphic FK cannot be created at the DB level (an FK references one table, but here there are several). Cycle **does not create an FK** for a morphed relation — there's only the `innerKey` column + an index. These attributes don't have an `fkCreate` parameter.
 
-`indexCreate: true` creates a composite index on `[morphKey, innerKey]` — critically important for performance when looking up "all Comments of this Article".
+`indexCreate: true` creates a composite index on `[innerKey, morphKey]`, in that order (`schema-builder/src/Relation/Traits/MorphTrait.php:99-114`) — critical for "all Comments of this Article" lookups. A query that filters by `morphKey` alone can't use it.
 
 ### `RefersToMorphed`
 
@@ -657,7 +657,7 @@ class Category
 - **Composite outerKey but scalar innerKey** (or vice versa) → the schema crashes. They must be symmetric.
 - **`Inverse` without `type:`** → schema-build error. The type is always required.
 - **Morph: the `morphKey` column doesn't fit in `morphKeyLength`** (long roles like `billing_invoice_line_item`). Bump `morphKeyLength` to 64-128, don't squeeze.
-- **Morph: composite index on `[morphKey, innerKey]`** is critically important — `indexCreate: true` (default), don't disable without reason.
+- **Morph: composite index on `[innerKey, morphKey]`** — keep `indexCreate: true` (default); it backs every lookup of morphed children.
 - **Morph + FK constraint** — impossible. Cycle doesn't create one; if you try by hand — you'll crash on the first insert.
 - **WHERE on morph columns without both columns** — a query `WHERE commentable_id = 42` without `commentable_role` finds foreign comments (of other entities with the same id). Always query by both columns.
 

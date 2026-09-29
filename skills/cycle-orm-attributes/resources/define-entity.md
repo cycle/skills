@@ -33,28 +33,28 @@ class User
 ```
 
 What happens by default:
-- **role** = `user` (lowercase class name without namespace).
-- **table** = pluralized form of the role, typically `users`. If automatic pluralization gives the wrong result, set `table:` explicitly.
+- **role** = camelCase short class name: `User` → `user`, `BillingInvoice` → `billingInvoice` (`Configurator.php:50`).
+- **table** = snake_case plural of the role: `users`, `billing_invoices`. If the pluralizer gets a word wrong, set `table:` explicitly.
+- **column** = snake_case of the property name: `$customerId` → `customer_id` (`Configurator.php:257`). Set `name:` only when the column name differs from that.
 - **database** = default DB from the DBAL config.
 - **mapper / repository / source / scope** — Cycle standard classes.
 
-`#[Entity]` is mandatory. If a class has `#[Column]`/`#[HasOne]`/..., but **no** `#[Entity]` — the locator silently skips the class, and it simply doesn't make it into the schema. This is a classic "why is nothing working" scenario.
-
-An entity must have **at least one** primary column — either `#[Column(type: 'primary')]` / `#[Column(type: 'bigPrimary')]`, or a regular column with `primary: true`, or several columns + a composite PK via `#[Table]` (see below).
+An entity needs **at least one** primary column — `#[Column(type: 'primary')]` / `#[Column(type: 'bigPrimary')]`, a regular column with `primary: true`, or a composite PK (see below). An entity without one is **silently dropped** from the compiled schema (`schema-builder/src/Compiler.php:48`); the symptom is ``SchemaException: Undefined schema `App\User`, not found.`` at runtime.
 
 ## Hard constraints on entity classes
 
-**These are the most common Cycle bugs.** The schema compiles fine, but it crashes on the first query with relations or during hydration — with no hint about why.
+The schema compiles fine with these mistakes; they surface at runtime, on the first load or `$orm->make()`.
 
-The constraints below describe the behavior of the **default mapper** (`Cycle\ORM\Mapper\Mapper`) — used whenever `#[Entity]` doesn't specify `mapper: ...`. The mapper can be swapped (for example, `PromiseMapper` from `cycle/orm-promise-mapper` doesn't subclass the entity with a proxy, so the `final` ban doesn't apply there). For an overview of the available mappers and their trade-offs see the [[cycle-orm]] skill.
+The constraints below describe the **default mapper** (`Cycle\ORM\Mapper\Mapper`), used whenever `#[Entity]` doesn't set `mapper:`. It **subclasses the entity with a proxy class** (for lazy-loaded relations) and hydrates properties through closures bound to the declaring class, **bypassing the constructor** (`orm/src/Mapper/Proxy/Hydrator/ClosureHydrator.php`). Any write error other than `TypeError` is **swallowed silently** (`ClosureHydrator.php:41-47,74-81`).
 
-At runtime the default mapper **subclasses the entity with a proxy class** (for lazy-load relations and dirty-tracking) and hydrates properties via reflection **bypassing the constructor** (the constructor is not called at all when an entity is hydrated from the DB). This leads to two prohibitions:
+**Forbidden:** `final` class. Throws ``RuntimeException("The entity `App\User` class is final and can't be extended.")`` on the first load or `make()` (`orm/src/Mapper/Proxy/ProxyEntityFactory.php:153-154`). Lifted by switching to `PromiseMapper`, which doesn't subclass the entity — see `cycle-orm/resources/mappers.md`.
 
-**Forbidden:** `final` class. The proxy won't be able to extend it. Lifted by switching the mapper to `PromiseMapper` (which doesn't rely on proxy-inheritance) — see `cycle-orm/resources/mappers.md`.
+**Forbidden:** `readonly`. What breaks depends on the form:
+- `readonly class` (PHP 8.2+) → uncatchable fatal when the proxy is generated: `Non-readonly class ... Cycle ORM Proxy cannot extend readonly class ...`.
+- `public readonly` property → silently left **uninitialized**; the first read fails with `must not be accessed before initialization`.
+- `private`/`protected readonly` property → the first hydration works, but every later write to it (refresh, re-hydration) is silently skipped.
 
-**Forbidden:** `readonly` properties (and `readonly class`, PHP 8.2+). The hydrator writes them via reflection bypassing the constructor — `readonly` forbids this, throwing `Error: Cannot modify readonly property`. Applies to all stock mappers, since they all hydrate via reflection.
-
-If you need external immutability — use `protected`/`private` fields + getters, no setters.
+For external immutability use `private`/`protected` properties + getters.
 
 ```php
 // Forbidden:
@@ -78,7 +78,7 @@ class User
 }
 ```
 
-`static` properties also don't work (Cycle never maps them) — that's usually obvious.
+`static` properties are never mapped.
 
 ## Constructor
 
@@ -168,13 +168,12 @@ final class InvoiceFactory
 }
 ```
 
-`$orm->make()` bypasses the `private` constructor (instantiation goes through the mapper), registers the entity in the Heap, sets up proxies for relations and picks the right class for STI/JTI. See `cycle-orm/resources/entity-lifecycle.md`.
+`$orm->make()` bypasses the `private` constructor (instantiation goes through the mapper), registers the entity in the Heap, sets up proxies for relations and picks the right class for STI/JTI. Prefer it over bare `new` for new entities in general — see `cycle-orm/resources/entity-lifecycle.md`.
 
 **Universal rules:**
 - **No side effects in the constructor** (logs, events, notifications). They will only run for the new-object scenario and not for entities loaded from the DB — the behavior becomes asymmetric.
 - Property visibility — any (`public`/`protected`/`private`). Reflection works regardless.
 - If you use the factory pattern — `repository:` is usually also custom (see `cycle-orm/resources/orm-extensions.md`); persisting via `$em->persist($invoice)` still works.
-- For creating **new** entities in production, generally prefer `$orm->make($class, $data)` over bare `new` — it registers the object in the Heap, picks the right class for STI/JTI and sets up proxies for relations (otherwise you can get an unexpected `SELECT` at persist time).
 
 ## Full `#[Entity]` signature
 
@@ -186,15 +185,13 @@ final class InvoiceFactory
     table: 'app_users',                    // table name
     readonlySchema: false,                 // true → schema for this table is not synced
     database: 'default',                   // DB name from the DBAL config
-    typecast: [Typecast::class, MyCaster::class], // typecast handlers (Cycle\ORM\Parser\Typecast is wired in by default)
+    typecast: [MyCaster::class, Typecast::class], // typecast handlers; replaces the built-in Cycle\ORM\Parser\Typecast — list it explicitly
     scope: SoftDeletedScope::class,        // class-string<Cycle\ORM\Select\ScopeInterface> — applied to every query
 )]
 class User { ... }
 ```
 
 There's also `source:` (`class-string<Cycle\ORM\Select\SourceInterface>`) — for cases when a table is read from one source but written to another. Not needed in 99% of projects; set it only if you know why.
-
-Use **named arguments**. The `Entity` class is marked `NamedArgumentConstructor` (via `spiral/attributes`), and attribute parsing in `cycle/annotated` is tied to parameter names.
 
 ### When to set things explicitly
 
@@ -207,7 +204,7 @@ Use **named arguments**. The `Entity` class is marked `NamedArgumentConstructor`
 | `mapper`         | non-standard hydration/dehydration, custom event model — see `cycle-orm/resources/orm-extensions.md`                          |
 | `scope`          | global condition on all queries (soft-delete, tenant filter) — see `cycle-orm/resources/orm-extensions.md`                    |
 | `readonlySchema` | the table is created/managed externally, migrations shouldn't touch it                                  |
-| `typecast`       | you use **custom** typecast rules in `#[Column(typecast: ...)]` — the handler must be registered here. Built-in rules (`int`/`float`/`bool`/`datetime`/`json`) work without registration. See `column-types.md`. |
+| `typecast`       | you use a **custom** typecast handler class. The list replaces the built-in handler, so include `Typecast::class` too (or add it via schema defaults). Built-in rules and callables work without this option. See `column-types.md`. |
 
 ## Composite primary key
 
@@ -285,7 +282,7 @@ use Cycle\Annotated\Annotation as Cycle;
     repository: InvoiceRepositoryImpl::class,
     table: 'billing_invoices',
     database: 'billing',
-    typecast: JsonValueObjectTypecast::class,
+    typecast: [JsonValueObjectTypecast::class, Typecast::class],
 )]
 #[Cycle\Table(
     columns: [
@@ -309,7 +306,7 @@ class Invoice
 }
 ```
 
-**Key detail:** the `property:` parameter on `#[Column]` specifies which class property the column belongs to. Without it, Cycle doesn't know where to write the value.
+**Key detail:** `property:` binds the column to a class property. It is required only when the property name differs from `name:`; with neither set, the column cannot be resolved (`Configurator.php:233-240`).
 
 **Pros:**
 - The domain class doesn't know about the ORM at the property-attribute level.
@@ -352,26 +349,25 @@ class Invoice
 }
 ```
 
-This is a normal pattern. The main thing — stick to one convention within a single project.
+Pick one convention per project.
 
 ## Common pitfalls
 
-- **`final class`** or **`readonly` property** — see "Hard constraints" above.
 - **Forgot `#[Entity]`** on a class with `#[Column]` — the locator skips it silently, the class never appears in the schema.
 - **The class is outside the locator's configured directories** (`TokenizerEntityLocator` / `Entity` locator) — it also won't reach the schema. This is an application-level configuration, not an attribute one, but the symptom is the same.
-- **No primary column** → `Cycle\Schema\Exception\RegistryException: Entity ... has no primary key`. Add `#[Column(type: 'primary')]`, or `primary: true` on an existing column, or a composite PK via `#[Table(primary: new PrimaryKey(...))]`.
+- **No primary column** → no error at compile time: the entity is silently left out of the schema (`schema-builder/src/Compiler.php:48`), and the first `$orm->getRepository(X::class)` throws ``SchemaException: Undefined schema `App\User`, not found.`` Add `#[Column(type: 'primary')]`, `primary: true` on an existing column, or a composite PK.
 - **Table name not guessed correctly** for irregular words or domain terms. Set `table:` explicitly instead of fighting the pluralizer.
 - **Role conflict across namespaces**: `App\Billing\Invoice` and `App\Mail\Invoice` both get role=`invoice`. Give them distinct explicit `role`s.
-- **`#[Entity]` without arguments on an existing class** — works, but if you later relocate/rename the class, the role/table "drift". For production, fix `role` and `table` explicitly.
+- **`#[Entity]` without arguments on an existing class** — works, but renaming or moving the class later changes the role and table. For production, set `role` and `table` explicitly.
 - **Forgot `readonlySchema: true`**, and a migration wipes columns. If the table is Cycle-managed — leave the default `false`.
 - **Class-level style — typo in `property:`**: the name must **exactly** match the PHP property. The schema compiles, but hydration is empty or crashes.
-- **Duplicate column in both styles** (`#[Column]` over the property + the same column in `#[Table(columns: [...])]`) — the behavior is undefined, don't do this.
+- **Same column declared in both styles** (`#[Column]` over the property + the same column in `#[Table(columns: [...])]`) — declare each column in exactly one place.
 - **Inheritance + class-level**: on inheritance (`inheritance.md`) the child entity inherits columns via the PHP mechanism. But if the child redefines `#[Table]` without parent columns — they **disappear**.
 
 ## Checklist when creating an entity
 
 1. The class is marked `#[Entity]` (plus, if needed, explicit `role`/`table`/`database`/`repository`).
-2. The class is **not `final`**, properties are **not `readonly`** and **not `static`**.
+2. The class is **not `final`** and **not `readonly`**; properties are **not `readonly`** and **not `static`**.
 3. There is a primary column: either one `#[Column(type: 'primary')]` / `primary: true`, or a composite PK via `#[Table(primary: new PrimaryKey(...))]`.
 4. The table name is what you expect (eyeball the pluralizer).
 5. The column declaration style (A or B) matches the project convention; if class-level, every `Column` has a correct `property:`.

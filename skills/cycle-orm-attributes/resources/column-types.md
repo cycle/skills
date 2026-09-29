@@ -17,24 +17,24 @@ public string $email;
 ```
 
 Default parameters:
-- `name` = property name (`$email` → column `email`)
+- `name` = snake_case of the property name (`$customerId` → column `customer_id`)
 - `nullable` = `false`
 - `default` = unset
 - `primary` = `false`
-- `typecast` = unset (the value arrives "as is" from the DB)
+- `typecast` = inferred from the column type by `GenerateTypecast` — see "Automatic rules" below
 
 ## Full signature
 
 ```php
 #[Column(
     type: 'string',                 // required
-    name: 'user_email',             // column name in the DB; default = property name
+    name: 'user_email',             // column name in the DB; default = snake_case property name
     property: 'email',              // for class-level declaration — see define-entity.md
     primary: false,                 // include in the PK
     nullable: false,
-    default: null,                  // default value (null != "unset")
+    default: 'x',                   // DB-level default; null means "no default"
     typecast: 'datetime',           // conversion rule; see below
-    castDefault: false,             // apply typecast to the default value at load time
+    castDefault: false,             // true + no `default:` → DDL gets a type-zero default (0, 0.0, false, '')
     readonlySchema: false,          // true → column is not synced by migrations
     // ...db-specific attributes (see below)
 )]
@@ -47,17 +47,16 @@ public string $email;
 
 `type:` is an ordinary string, not an enum. Cycle passes the value to `cycle/database` (DBAL), which maps it to the SQL type of the specific driver. What's available depends on the driver and its extensions (for example, `vector` appears if pgvector is installed). `ExpectedValues` in `Column.php` is just an IDE/psalm hint, not validation.
 
-Standard types are the usual ones for any DBAL: `integer`, `bigInteger`, `smallInteger`, `tinyInteger`, `float`, `double`, `decimal`, `boolean`, `string`, `text`, `tinyText`, `longText`, `datetime`, `date`, `time`, `timestamp`, `binary`, `tinyBinary`, `longBinary`, `json`. Behavior is the usual one; PHP+SQL knowledge covers it.
-
 ### Types with special ORM semantics
 
 Cycle handles these not as "just an SQL-type mapping" — they have their own behavior in the schema or in hydration:
 
 - **`primary` / `bigPrimary`** — automatically PK + auto-increment. INT/BIGINT respectively.
 - **`smallPrimary`** — same, but SMALLINT *(PostgreSQL only)*.
-- **`uuid` / `ulid` / `snowflake`** — identifiers; **must** be paired with `typecast:` (otherwise you get a raw string from the DB).
+- **`uuid` / `ulid` / `snowflake`** — identifiers; hydrated as strings. A `string` property needs nothing more; an object property (UUID value-object) needs an explicit `typecast:`.
 - **`enum`** — requires `values:` (array of strings or backed-enum class); see the enum section.
-- **`json` / `jsonb`** — work with the built-in `typecast: 'json'`; `jsonb` is PG only.
+- **`json` / `jsonb`** — need an explicit `typecast: 'json'` to get arrays (they aren't inferred); `jsonb` is PG only.
+- **`decimal`** — inferred as `float` (precision loss); a `string $amount` property then fails hydration with `MapperException`. Use a `float` property or a callable typecast that returns a string.
 
 Everything else is driver-specific names and passthrough to DBAL. If your driver supports them — write them as is:
 
@@ -145,7 +144,7 @@ Both ways work and are equivalent at the schema level. Internally Cycle holds tw
 
 ## Identifiers
 
-For UUID/ULID/Snowflake you **must** pair the type with a typecast (see below), otherwise you'll get a raw string from the DB instead of an object.
+UUID/ULID/Snowflake columns hydrate as strings. To get a value-object in the property, add a callable or custom typecast (see below).
 
 **Alternative for UUID generation:** the `#[Uuid7]` attribute (or `Uuid1`..`Uuid6`) from `cycle/entity-behavior-uuid` creates the column itself, registers the typecast and generates a UUID of the required version on `OnCreate` — see `behaviors.md`.
 
@@ -168,9 +167,10 @@ public \DateTimeImmutable $create_time;
 ```
 
 **Important details:**
-- `default: null` **!= unset**. `null` is explicitly written as DEFAULT NULL. To have no default at all — simply don't pass the parameter.
+- `default: null` is the same as no default (`Annotation/Column.php:73`). For `DEFAULT NULL` set `nullable: true`.
+- A BackedEnum default is stored as its `->value`.
 - `default` is stored in the **schema** (a migration will create the column with `DEFAULT 'draft'`). When creating an entity in PHP this value is **not** applied automatically — it's a DB-level default. If you want a new object `new Status()` to immediately have the value — set the default **also** in PHP (`public string $status = 'draft';`).
-- `castDefault: true` — apply the typecast to the default value at load (useful for datetime defaults via a string).
+- `castDefault: true` without `default:` — the DDL gets a zero default for the type: `0` for int/datetime, `0.0`, `false`, `''`, or the first enum value (`schema-builder/src/Table/Column.php:148-181`). Schema-only; it doesn't affect hydration.
 
 ---
 
@@ -204,7 +204,7 @@ You can also pass an array of enum cases:
 #[Column(type: 'enum', values: [InvoiceStatus::Draft, InvoiceStatus::Sent])]
 ```
 
-**Pitfall:** SQL ENUM lives poorly with migrations (ADD VALUE requires care, ORDER is strict in PG). On PG/MSSQL it's often more practical to keep the column as a `string` + validate at the PHP level.
+**Pitfall:** SQL ENUM is awkward to migrate (ADD VALUE requires care, ORDER is strict in PG). On PG/MSSQL it's often more practical to keep the column as a `string` + validate at the PHP level.
 
 ---
 
@@ -234,34 +234,26 @@ class User
 
 ## GeneratedValue
 
-`#[GeneratedValue]` marks that the value is **generated automatically** — by the DB on insert (autoincrement), or by PHP before insert/update.
+`#[GeneratedValue]` is **metadata only**: it tells the ORM who fills the value, so an INSERT may go out without it. Cycle itself generates nothing — the value comes from the DB, from your code, or from a behavior listener (`#[CreatedAt]`, `#[UpdatedAt]`, `#[Uuid7]` — see `behaviors.md`), which sets these flags itself.
 
 ```php
 use Cycle\Annotated\Annotation\GeneratedValue;
 
-#[Column(type: 'primary')]
-#[GeneratedValue(onInsert: true)]              // DB auto-increment on insert
+#[Column(type: 'bigInteger', primary: true)]
+#[GeneratedValue(onInsert: true)]              // DB fills it (sequence/trigger); ORM reads it back
 public int $id;
 
 #[Column(type: 'uuid', primary: true)]
-#[GeneratedValue(beforeInsert: true)]          // PHP side generates UUID before insert
+#[GeneratedValue(beforeInsert: true)]          // a PHP listener fills it before INSERT
 public string $uuid;
-
-#[Column(type: 'datetime', default: 'CURRENT_TIMESTAMP')]
-#[GeneratedValue(beforeInsert: true)]
-public \DateTimeImmutable $create_time;
-
-#[Column(type: 'datetime', nullable: true)]
-#[GeneratedValue(beforeUpdate: true)]          // refreshed on every save()
-public ?\DateTimeImmutable $update_time = null;
 ```
 
 **Three flags:**
-- `beforeInsert: true` — generated by PHP before INSERT (UUID/ULID/timestamp).
-- `onInsert: true` — generated by the DB on INSERT (autoincrement — Cycle sets it for `primary`/`bigPrimary` itself).
-- `beforeUpdate: true` — refreshed on every UPDATE (`update_time`).
+- `onInsert: true` — the DB generates the value on INSERT. Set **automatically** for every primary field (`type: 'primary'` and `primary: true` alike, `Configurator.php:434-439`) and for `serial` types.
+- `beforeInsert: true` — PHP code fills it before INSERT.
+- `beforeUpdate: true` — PHP code refreshes it before every UPDATE.
 
-Without `GeneratedValue` the field value comes from the entity itself (whatever you put in it manually).
+For a PK generated in PHP (UUID set by a listener or your code), `beforeInsert: true` replaces the automatic `onInsert`.
 
 ---
 
@@ -302,26 +294,47 @@ Cycle **will not** touch this column during migrations (won't create, drop, or m
 
 Cycle stores data in the DB as strings/numbers. In a PHP entity they must be turned into objects (`DateTimeImmutable`, BackedEnum, VO). This is done by the **typecaster** — a set of rules applied at load (cast) and at save (uncast).
 
+## Automatic rules
+
+`Cycle\Schema\Generator\GenerateTypecast` — part of the standard Compiler pipeline (`cycle-orm/resources/installation.md`) — assigns a rule to every column **without** `typecast:`, based on the column type in the table schema (`schema-builder/src/Generator/GenerateTypecast.php:40-68`):
+
+| Column type                                  | Inferred rule |
+|----------------------------------------------|---------------|
+| boolean                                      | `bool`        |
+| integer types, `primary`/`bigPrimary`        | `int`         |
+| `float`/`double`/`decimal`                   | `float`       |
+| `datetime`/`date`/`time`/`timestamp`         | `datetime`    |
+| everything else (`string`, `json`, `uuid`, `enum`, ...) | none — stays a string |
+
+So `#[Column(type: 'datetime')] public \DateTimeImmutable $at;` works without `typecast:`. Write `typecast:` explicitly for `json`, BackedEnum, value-objects, or to override the inferred rule. Without `GenerateTypecast` in the pipeline nothing is inferred, and a `datetime` column hydrates as a string.
+
 ## Two registration levels
 
-**1. On the column** — `#[Column(typecast: ...)]`. Specifies which rule to apply to this column.
+**1. On the column** — `#[Column(typecast: ...)]`: the **rule** for this column (a built-in rule name, a BackedEnum class, a callable, or a rule name your handler understands).
 
 ```php
-#[Column(type: 'datetime')]
-public \DateTimeImmutable $create_time;        // crashes: the DB returns a string
-
-#[Column(type: 'datetime', typecast: 'datetime')]
-public \DateTimeImmutable $create_time;        // the built-in rule applies
+#[Column(type: 'json', typecast: 'json')]
+public array $metadata = [];
 ```
 
-**2. On the entity** — `#[Entity(typecast: ...)]`. Registers **handler classes** that know how to process rules:
+**2. On the entity** — `#[Entity(typecast: ...)]`: the **handler classes** that interpret rules.
 
 ```php
-#[Entity(typecast: [Typecast::class, JsonValueObjectTypecast::class])]
+#[Entity(typecast: [JsonValueObjectTypecast::class, Typecast::class])]
 class Invoice { /* ... */ }
 ```
 
-**The link:** on a column you write the **rule name**, on an entity you register the **handler classes** that apply that rule. For built-in rules (`int`/`bool`/`float`/`datetime`/`json`) and BackedEnum the default handler (`Cycle\ORM\Parser\Typecast`) is wired in **automatically** — no explicit registration needed.
+**Handler list replaces the built-in one.** `Cycle\ORM\Parser\Typecast` is used only when the entity declares no handler (`orm/src/Factory.php:87-91`). With `typecast: MyHandler::class` alone, the built-in rules — including the inferred `datetime`/`int`/`bool` — stop applying to that entity. List `Typecast::class` explicitly, or add it once via schema defaults:
+
+```php
+// Compiler defaults are merged into every entity's handler list: entity handlers first, then defaults
+// (schema-builder/src/Compiler.php:235-249). spiral/cycle-bridge passes its `schema.defaults` config here.
+(new Compiler())->compile($registry, $generators, [
+    SchemaInterface::TYPECAST_HANDLER => [Typecast::class],
+]);
+```
+
+A default list without `Typecast::class` removes the built-in handler from every entity that doesn't declare its own.
 
 ## Built-in rules
 
@@ -364,7 +377,7 @@ enum InvoiceStatus: string
 public InvoiceStatus $status;
 ```
 
-At load Cycle calls `InvoiceStatus::tryFrom($value)`. Works for both `string`-backed and `int`-backed (with automatic normalization). **Handler registration is not needed** — the built-in `Typecast` handles it.
+At load Cycle calls `InvoiceStatus::tryFrom($value)`. Works for both `string`-backed and `int`-backed (with automatic normalization). The built-in `Typecast` handles it — no registration needed unless the entity declares its own handler list (then include `Typecast::class`).
 
 For **uncast** nothing needs to be configured — DBAL converts a `BackedEnum` to its `value` via `->value` itself.
 
@@ -384,17 +397,18 @@ For all that — **read `cycle-orm/resources/typecasters-advanced.md`**. It cove
 
 ## Common pitfalls
 
-- **`default: null` for a non-nullable column** → the schema crashes. If you want NULL — add `nullable: true`.
+- **Custom handler on the entity, and `datetime`/`int`/BackedEnum columns come back raw** → `#[Entity(typecast: X::class)]` replaced the built-in handler. Use `typecast: [X::class, Typecast::class]` or add `Typecast::class` to schema defaults.
+- **Custom rule name ignored** → `cycle/annotated` resolves a string rule as a class name relative to the entity namespace, case-insensitively (`Configurator.php:354-371`): rule `'money'` next to a class `Money` becomes `App\Entity\Money`, and your handler never sees `'money'`. Pick rule names that don't match class names in the entity's namespace.
 - **Default string length** — typically 255 (driver-dependent). For email/URL — set `length:` explicitly.
 - **PG-only/MSSQL-only types in a cross-driver project** — crashes on the others. Use `jsonb` only if you're sure of PG; otherwise `json`.
 - **ENUM with migrations** — changing the value list is operationally painful (especially on PG). Often `string` is simpler.
-- **`type: 'datetime'` + PHP `\DateTimeImmutable` without a typecast** → you get a string from the DB, not an object. Add `typecast: 'datetime'`.
+- **`datetime` column hydrates as a string** → `GenerateTypecast` is missing from the Compiler pipeline. Add it (or set `typecast: 'datetime'` per column).
 - **`type: 'primary'` on a UUID column** — `primary` is autoincrement INT. For a UUID-PK you need `type: 'uuid'` + `primary: true`.
 - **GeneratedValue without flags** → has no effect (`getFlags()` returns `null`). Set at least one of `beforeInsert`/`onInsert`/`beforeUpdate`.
-- **`property:` typo** in class-level style → the column won't bind to the property, hydration sails right past.
-- **`typecast` on a column, but the handler isn't registered on the entity** → the column isn't converted, the raw DB value lands in the property. This is especially silent for custom typecast classes.
+- **`property:` typo** in class-level style → the column binds to a non-existent property, and the real property is never hydrated.
+- **Custom rule on a column, but no handler for it on the entity** → the column isn't converted; the raw DB value lands in the property, silently.
 - **DateTime timezone** — the built-in `datetime` rule takes TZ from the DB driver. If the service has a different TZ — set it on the driver, or use your own datetime typecast.
-- **`datetime` is stored as `DateTimeImmutable`, not `DateTime`** — if the property is `\DateTime` (mutable), an immutable comes back from the DB. Use `\DateTimeImmutable`.
+- **`\DateTime` (mutable) property** → the `datetime` rule produces `DateTimeImmutable`, and hydration fails with `MapperException("Can't hydrate an entity because property and value types are incompatible.")`. Type the property as `\DateTimeImmutable` (or `\DateTimeInterface`).
 - **Enum value in the DB != cases()** — `tryFrom()` returns `null`, into a not-nullable property it crashes. Keep values in sync with the enum.
 
 ## Checklist
@@ -403,8 +417,8 @@ For all that — **read `cycle-orm/resources/typecasters-advanced.md`**. It cove
 2. For the PK the correct option is chosen: `primary`/`bigPrimary` (autoincrement) **or** `primary: true` (for UUID/ULID/business-key).
 3. If the field is nullable — `nullable: true` is set AND the PHP type is marked `?T`.
 4. For `string` columns with a known length — `length:` is set.
-5. For `datetime`/`enum`/`uuid`/`ulid`/`json`/VO — `typecast:` is set (or you're deliberately working with a raw string).
-6. If you use a custom typecast class — it's registered in `#[Entity(typecast: [...])]`.
-7. `GeneratedValue` is placed exactly where the value isn't generated from PHP code by hand.
+5. `json`, BackedEnum, and value-object columns have an explicit `typecast:`; the Compiler pipeline includes `GenerateTypecast` for the rest.
+6. A custom typecast class is registered in `#[Entity(typecast: [...])]` **together with** `Typecast::class` (or `Typecast::class` is in schema defaults).
+7. `GeneratedValue` marks only fields filled by the DB or by a listener, never ones your code sets before `persist()`.
 8. `default` is duplicated in PHP if you want to see it in new objects too.
 9. For class-level declaration, every `Column` has a correct `property:` (`define-entity.md`).
