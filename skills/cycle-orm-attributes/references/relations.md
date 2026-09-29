@@ -7,7 +7,7 @@ Cycle supports **five** basic relation types, plus **four polymorphic** variants
 | `BelongsTo`        | **this** entity              | one → one (parent)       | "I have an owner/parent"                                |
 | `HasOne`           | **the other** entity         | one → one                | "I have one child, the FK is on it"                     |
 | `HasMany`          | **the other** entity         | one → many               | "I have many children, the FK is on them"               |
-| `RefersTo`         | **this** entity              | one → one (deferred)     | like BelongsTo, but the FK is written by a follow-up UPDATE — breaks insert cycles |
+| `RefersTo`         | **this** entity              | one → one (deferred)     | like BelongsTo, but the FK is written by a follow-up UPDATE — breaks insert cycles (only with `nullable: true`) |
 | `ManyToMany`       | **pivot table**              | many → many              | "many-to-many" via `through`                            |
 | `BelongsToMorphed` | **this** + morph column      | one → one (polymorphic)  | "one owner from a set of unrelated types"               |
 | `RefersToMorphed`  | **this** + morph column      | one → one (polymorphic)  | like BelongsToMorphed, but deferred — breaks morph cycles |
@@ -60,10 +60,10 @@ Decide by **two questions**:
 |----------------------------------------------------------------------------------------------------|-------------------------------------------------|
 | A owns/creates B (standard parent–child)                                                           | `BelongsTo` (cascade-save by default)           |
 | B is external (auth module, vendor entity, read-only from A's perspective)                         | `BelongsTo` with `cascade: false`               |
-| There's a cycle `A.foo → B` + `B.bar → A` (`BelongsTo` on both sides creates an insert-time cycle) | Make **one** side `RefersTo` to break the cycle |
-| A row may reference itself (`$node->ref = $node`)                                                  | `RefersTo`                                      |
+| There's a cycle `A.foo → B` + `B.bar → A` (`BelongsTo` on both sides creates an insert-time cycle) | Make **one** side `RefersTo` with `nullable: true` to break the cycle |
+| A row may reference itself (`$node->ref = $node`)                                                  | `RefersTo` with `nullable: true`                |
 
-Canonical cycle example: `Order.lastInvoice` + `Invoice.order`. `BelongsTo` on both sides → Cycle can't determine the insert order. Fix: turn one of the two into `RefersTo`. `RefersTo` inserts the row without the FK and writes it with a follow-up UPDATE once the target has a key.
+Canonical cycle example: `Order.lastInvoice` + `Invoice.order`. `BelongsTo` on both sides → Cycle can't determine the insert order. Fix: turn one of the two into `#[RefersTo(target: Invoice::class, nullable: true)]`. `RefersTo` inserts the row without the FK and writes it with a follow-up UPDATE once the target has a key, so the FK column must accept `NULL`. `nullable: true` is required: a non-nullable `RefersTo` is compiled as `BelongsTo` and the cycle stays.
 
 > The same cycle problem exists for **morphed** relations: `BelongsToMorphed` is also a hard dependency. To break a self-linked or cyclic morphed reference (`A → A`, `A → B → A`), use `RefersToMorphed` — the morphed counterpart of `RefersTo` (see the "Polymorphic (morphed) relations" section).
 
@@ -178,7 +178,7 @@ Don't create an FK at the DB level. The relation still works (Cycle knows about 
 **When useful:**
 - **The paired side already creates the same FK.** When a relation is declared from both sides (e.g. `BelongsTo` on Order + `HasMany` on Customer), both renderers target the FK on the same column `orders.customer_id`. DBAL deduplicates FKs by columns, but `fkAction`/`fkOnDelete` from the side rendered last overwrite values from the first — the configuration becomes traversal-order-dependent. To avoid surprises, set `fkCreate: false` on **one** side (typically on `HasOne`/`HasMany` — the FK logically belongs to the side holding the FK column, i.e. `BelongsTo`/`RefersTo`).
 - Cross-DB relations (an FK between different databases is impossible).
-- SQL Server: an FK on an identity column with CASCADE is forbidden; on a non-PK/unique column is forbidden. If you hit a restriction and can't restructure — `fkCreate: false`.
+- SQL Server: it rejects cascading FKs that form cycles or multiple cascade paths (error 1785, "may cause cycles or multiple cascade paths"), and FKs that reference a non-PK/non-unique column. If `fkAction: 'NO ACTION'` on one path isn't an option and you can't restructure — `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
 - Performance/operational reasons (bulk loads, migrations under load).
 - Tests with fixtures where the FK interferes with insert order.
 
@@ -335,15 +335,11 @@ Accepted forms:
 #[HasMany(target: Post::class, collection: 'doctrine')]
 public Collection $posts;
 
-// 2. Interface FQCN — factory matched via getInterface()
-#[HasMany(target: Post::class, collection: \Doctrine\Common\Collections\Collection::class)]
-public Collection $posts;
-
-// 3. Concrete collection class FQCN — withCollectionClass()
+// 2. Concrete collection class FQCN — withCollectionClass()
 #[HasMany(target: Post::class, collection: MyCustomCollection::class)]
 public MyCustomCollection $posts;
 
-// 4. null / omitted — default factory (ArrayCollectionFactory out of the box)
+// 3. null / omitted — default factory (ArrayCollectionFactory out of the box)
 #[HasMany(target: Post::class)]
 public array $posts = [];
 ```
@@ -606,9 +602,9 @@ class Category
 - **``Unable to resolve `comment`.`author` relation target (not found or invalid)``** during schema build → `target:` names no entity class or role in the schema. Verify that the target class carries `#[Entity]` and reaches the locator; for morphed relations `target:` must be an interface.
 - **"Field `Entity`.`xxx` does not exists, referenced by …"** during schema build → `innerKey`/`outerKey`/`morphKey` references a name that isn't among the entity's fields. Most common cause: you wrote a **DB column name** instead of a **property name**. If property `$customerId` maps to column `customer_id`, `innerKey` must be `'customerId'`.
 - **FK column is duplicated in STI/JTI**: BelongsTo on the child + the column inherited from the parent → conflict. See `inheritance.md`.
-- **`Transaction can't be finished. Some relations can't be resolved:`** on insert → a `BelongsTo` cycle (A → B → A, or an entity referencing itself). Turn one side into `RefersTo`: it inserts the row first and writes the FK with a follow-up UPDATE. For a **morphed** cycle (`BelongsToMorphed` self/A→B→A) the symptom is `Pool has gone into an infinite loop` — break it with `RefersToMorphed`.
+- **`Transaction can't be finished. Some relations can't be resolved:`** on insert → a `BelongsTo` cycle (A → B → A, or an entity referencing itself). Turn one side into `RefersTo` with `nullable: true`: it inserts the row first and writes the FK with a follow-up UPDATE (a non-nullable `RefersTo` is compiled as `BelongsTo` and doesn't help). For a **morphed** cycle (`BelongsToMorphed` self/A→B→A) the symptom is `Pool has gone into an infinite loop` — break it with `RefersToMorphed`.
 - **`nullable: true` on a relation, but the column is not nullable** → hydration may crash on assigning `null`. Keep them in sync.
-- **CASCADE FK on an MSSQL identity column** → the schema won't compile. Solutions: `fkAction: 'NO ACTION'` or `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
+- **MSSQL: "may cause cycles or multiple cascade paths"** → two cascading FK paths reach the same table, or one loops back (self-reference); schema sync fails. Solutions: `fkAction: 'NO ACTION'` (or `fkOnDelete:`) on one relation of the path, or `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
 - **Paired `BelongsTo` + `HasMany` render different `fkAction`s** → the side rendered last wins; set `fkCreate: false` on one side (see `fkCreate: false`).
 - **`$em->delete($parent)` left children in the DB** → Cycle relies on the FK's `ON DELETE CASCADE` (see "Cycle relies on the FK for delete cascading").
 - **`through` entity has no PK** → Cycle can't identify a pivot row. The pivot must be a full-fledged entity.
@@ -622,7 +618,7 @@ class Category
 2. `innerKey`/`outerKey` are either explicitly set, or the defaults match the actual column names.
 3. The FK column exists as `#[Column]` in the corresponding entity with the right type and `nullable`.
 4. `nullable:` on the relation is in sync with `nullable:` on the column and `?T` in the property type.
-5. `cascade:` is decided deliberately: `true` for owned relations, `false` when the related entity is saved elsewhere. Insert cycles are broken with `RefersTo`, not with `cascade`.
+5. `cascade:` is decided deliberately: `true` for owned relations, `false` when the related entity is saved elsewhere. Insert cycles are broken with `RefersTo` + `nullable: true`, not with `cascade`.
 6. `fkCreate`/`fkAction`/`fkOnDelete` suit the driver (especially for MSSQL — see `cycle-orm/references/schema-troubleshooting.md`).
 7. `load:` — `'lazy'` by default; `'eager'` only when the relation is truly always needed.
 8. For ManyToMany — `through:` points to a full-fledged entity with a PK.

@@ -154,7 +154,7 @@ class Employee extends User { /* ... */ }
 
 **`outerKey`** — a **field name** on the parent, not a DB column name. The default (the parent's primary field) fits almost always. `outerKey` may point at any unique parent field (a legacy id, a business key) whose type matches the PK: the child's PK stores that field's value, so an int PK can't reference a string `email`. Along with the FK, Cycle adds a UNIQUE index on the parent's `outerKey` columns itself.
 
-**`fkCreate: false`** — disables the FK constraint. Cycle still knows about the relationship, the schema just has no FOREIGN KEY. Useful for cross-DB hierarchies or drivers where FK with CASCADE doesn't work (MSSQL identity columns).
+**`fkCreate: false`** — disables the FK constraint. Cycle still knows about the relationship, the schema just has no FOREIGN KEY. Useful for cross-DB hierarchies or MSSQL when the cascading FK adds a second cascade path or a cycle ("may cause cycles or multiple cascade paths" — alternatively `fkAction: 'NO ACTION'`; see `cycle-orm/references/schema-troubleshooting.md`).
 
 ### Which columns live in the child table
 

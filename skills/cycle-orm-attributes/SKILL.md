@@ -54,4 +54,4 @@ Load files by task trigger. Each is self-contained, with its own minimum, decisi
 - Choosing a mapper (default `Mapper` vs `PromiseMapper` vs `StdMapper` vs `ClasslessMapper`) → skill `cycle-orm`, `references/mappers.md`.
 - Custom Repository / Scope / Mapper (writing your own) → skill `cycle-orm`, `references/orm-extensions.md`.
 - Custom typecast handlers (`CastableInterface`/`UncastableInterface`/`CompositeTypecast`, JSON-VO pattern) → skill `cycle-orm`, `references/typecasters-advanced.md`.
-- Schema-build and runtime-error diagnostics ("Undefined schema ... not found", MSSQL CASCADE, JTI duplication, `readonly class` proxy fatal, "unknown rule") → skill `cycle-orm`, `references/schema-troubleshooting.md`.
+- Schema-build and runtime-error diagnostics ("Undefined schema ... not found", MSSQL "multiple cascade paths", JTI `WrongParentKeyColumnException`, `readonly class` proxy fatal, typecast rule ignored (column comes back raw)) → skill `cycle-orm`, `references/schema-troubleshooting.md`.

@@ -195,7 +195,7 @@ The generated name is `{table}_index_{columns}_{uniqid()}` for indexes and `{tab
 - **Changing column order in an index** requires recreating the index in a migration — it's a **different** index from the query planner's perspective.
 - **`#[ForeignKey]` `innerKey`/`outerKey` that is neither a field nor a column** — schema build fails with `AnnotationException`: "Unable to resolve column name."
 - **`action: 'SET NULL'` on an FK + non-nullable column** — crashes when trying to SET NULL. The column must be `nullable: true`.
-- **CASCADE FK on an MSSQL identity column** — forbidden by SQL Server itself. Use `'NO ACTION'` or `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
+- **MSSQL "may cause cycles or multiple cascade paths"** — SQL Server rejects cascading FKs that form a cycle or a second cascade path to one table. Use `'NO ACTION'` on one relation of the path or `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
 
 ## Checklist
 
