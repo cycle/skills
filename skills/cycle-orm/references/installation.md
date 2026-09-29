@@ -1,7 +1,5 @@
 # Installation and bootstrap
 
-Which packages to install, which bootloaders/service providers to register, and how to assemble `ORM` for different frameworks. Covered in detail: Spiral (`spiral/cycle-bridge`, first-class by Cycle's authors), Yii3 (`yiisoft/yii-cycle`, official from the Yii team), and a standalone bootstrap. For Laravel / Symfony / everything else — a brief "Other frameworks" section with Packagist links.
-
 See also:
 - `EventDrivenCommandGenerator` (required for behaviors) — `cycle-orm-attributes/references/behaviors.md`
 - get a repository / EntityManager after bootstrap → `repositories.md`
@@ -74,7 +72,7 @@ protected const LOAD = [
 
 All of these are wired in automatically. The package also contains two bootloaders that are **NOT in `BridgeBootloader::DEPENDENCIES`** — wire them in manually if needed:
 - `DisconnectsBootloader` — closes connections after a request (relevant for long-running runtimes: RoadRunner, FrankenPHP).
-- `EntityBehaviorBootloader` — binds `CommandGeneratorInterface` to `EventDrivenCommandGenerator` (see "Entity behaviors" below).
+- `EntityBehaviorBootloader` — required for behavior attributes, see "Entity behaviors" below.
 
 If you don't need some of what gets wired in (e.g. no DataGrid) — skip `BridgeBootloader` and wire in only the bootloaders you need manually:
 
@@ -91,7 +89,7 @@ protected const LOAD = [
 
 ### Entity behaviors — **a ready bootloader exists, but is not wired in by default**
 
-`spiral/cycle-bridge` **contains** `Spiral\Cycle\Bootloader\EntityBehaviorBootloader`, but it is **not in `BridgeBootloader::DEPENDENCIES`** — wire it in separately. The bootloader itself does exactly one thing: it binds `Cycle\ORM\Transaction\CommandGeneratorInterface` to `Cycle\ORM\Entity\Behavior\EventDrivenCommandGenerator` (see `src/Bootloader/EntityBehaviorBootloader.php`).
+`spiral/cycle-bridge` **contains** `Spiral\Cycle\Bootloader\EntityBehaviorBootloader`, but it is **not in `BridgeBootloader::DEPENDENCIES`** — wire it in separately. The bootloader itself does exactly one thing: it binds `Cycle\ORM\Transaction\CommandGeneratorInterface` to `Cycle\ORM\Entity\Behavior\EventDrivenCommandGenerator`.
 
 1. Install the package:
    ```
@@ -181,7 +179,8 @@ What happens under the hood (`Cycle\ORM\ORM::prepareServices()` + `MapperProvide
 When to turn on:
 - **Long-running runtime** (RoadRunner, FrankenPHP, Swoole, Octane) — the worker lives long and serves many requests. The one-off warmup cost on worker boot turns into a zero cold-start for the first request → better p95/p99 latency.
 - **PHP-FPM / classic CGI** — every request is a new process; warmup means preparing **all** roles for the sake of one request → wasted work, no payoff. Leave `false`.
-- **CLI scripts / consumers** — typically narrow, one-shot. Warmup is overkill.
+- **Long-running queue consumers** — same payoff as a long-running web worker: one warmup, many messages.
+- **One-shot CLI scripts** — touch a few roles and exit; leave warmup off.
 
 Default — `false` (overridable via the `CYCLE_SCHEMA_WARMUP` env variable).
 
@@ -250,6 +249,15 @@ Official (from the Yii team) packages, actively maintained. Configuration, DI bi
 - **`yiisoft/data-cycle`** — https://packagist.org/packages/yiisoft/data-cycle. A `yiisoft/data` adapter for Cycle: reader/paginator/sorter over `Select`.
 - **`yiisoft/rbac-cycle-db`** — https://packagist.org/packages/yiisoft/rbac-cycle-db. Storage of roles/permissions for `yiisoft/rbac` over `cycle/database` (DBAL directly, not the ORM).
 
+**Behaviors in Yii3:** there is no ready behaviors wiring. After `composer require cycle/entity-behavior`, override the DI binding in `config/di.php`:
+
+```php
+return [
+    \Cycle\ORM\Transaction\CommandGeneratorInterface::class
+        => \Cycle\ORM\Entity\Behavior\EventDrivenCommandGenerator::class,
+];
+```
+
 ---
 
 ## Standalone (no framework)
@@ -260,7 +268,9 @@ Minimum bootstrap. Suitable for CLI scripts, tests, your own stack.
 
 ```
 composer require cycle/orm cycle/annotated cycle/schema-builder cycle/database
-composer require --dev cycle/migrations cycle/schema-migrations-generator   # if you need migrations
+# if you need migrations: the Migrator applies them in production, the diff generator runs only in dev
+composer require cycle/migrations
+composer require --dev cycle/schema-migrations-generator
 ```
 
 ### Bootstrap (full example)
@@ -303,6 +313,7 @@ $classLocator = new ClassLocator(
 // 3. Schema compilation
 $registry = new Registry($dbal);
 $schemaArray = (new Compiler())->compile($registry, [
+    new Generator\ResetTables(),                     // ← first: lets the diff drop columns/indexes/FKs removed from entities
     new Annotated\Embeddings(new TokenizerEmbeddingLocator($classLocator)),
     new Annotated\Entities(new TokenizerEntityLocator($classLocator)),
     new Annotated\TableInheritance(),
@@ -313,6 +324,7 @@ $schemaArray = (new Compiler())->compile($registry, [
     new Generator\RenderTables(),
     new Generator\RenderRelations(),
     new Generator\RenderModifiers(),                 // ← render behavior columns
+    new Generator\ForeignKeys(),                     // ← renders #[ForeignKey]; without it they are ignored
     new Annotated\MergeIndexes(),
     // new Generator\SyncTables(),                   // ← uncomment in dev to materialize tables to DB
     new Generator\GenerateTypecast(),
@@ -347,6 +359,8 @@ if (file_exists($cacheFile)) {
 $orm = new ORM(new Factory($dbal), new Schema($schemaArray));
 ```
 
+Instead of the hand-rolled file cache you can use `cycle/schema-provider`: a `SchemaProviderPipeline` that asks providers in order and stops at the first one that returns a schema — `SimpleCacheSchemaProvider` (PSR-16 cache from the container) or `PhpFileSchemaProvider` (PHP file). The package ships no provider that runs `Compiler`; the compile-on-miss step is your own `SchemaProviderInterface` implementation. See the package README.
+
 In Spiral this is done by `SchemaBootloader` automatically through `MemoryInterface`, toggled by the `schema.cache` flag in `app/config/cycle.php` (see the cache section in the Spiral integration above).
 
 ### EventDrivenCommandGenerator (for behaviors)
@@ -371,31 +385,22 @@ $orm = new ORM(
 
 ## Other frameworks (Laravel, Symfony, etc.)
 
-There is no supported integration package from the Cycle team for these — pick a community bridge from Packagist, or self-roll a thin wrapper around the standalone bootstrap above.
+There is no supported integration package from the Cycle team for these — pick a community bridge from Packagist, or write a thin hand-rolled wrapper around the standalone bootstrap above.
 
-- **Laravel** — community package: https://packagist.org/packages/wayofdev/laravel-cycle-orm-adapter. The service provider auto-registers via package discovery; artisan commands are prefixed `cycle:*`; the package pulls in `cycle/entity-behavior` + `cycle/entity-behavior-uuid` on its own. Details — in the package's README.
-- **Symfony** — no maintained bundle; self-rolled: a factory service that assembles `ORM` per the standalone schema above, registered in `services.yaml` against `Cycle\ORM\ORMInterface` / `EntityManagerInterface`, plus your own `bin/console cycle:*` commands on top of `Compiler` + `Migrator`. When migrating from Doctrine — mind the imports: Cycle looks for `Cycle\Annotated\Annotation\Entity`, not `Doctrine\ORM\Mapping\Entity` (see `schema-troubleshooting.md`).
+- **Laravel** — community package: https://packagist.org/packages/wayofdev/laravel-cycle-orm-adapter. The service provider auto-registers via package discovery; artisan commands are prefixed `cycle:*`; the package pulls in `cycle/entity-behavior` + `cycle/entity-behavior-uuid` on its own. See the package README.
+- **Symfony** — no maintained bundle; hand-rolled integration: a factory service that assembles `ORM` per the standalone schema above, registered in `services.yaml` against `Cycle\ORM\ORMInterface` / `EntityManagerInterface`, plus your own `bin/console cycle:*` commands on top of `Compiler` + `Migrator`. When migrating from Doctrine — mind the imports: Cycle looks for `Cycle\Annotated\Annotation\Entity`, not `Doctrine\ORM\Mapping\Entity` (see `schema-troubleshooting.md`).
 - **Everything else** — `cycle/orm` itself is framework-agnostic. Take the standalone bootstrap, register `ORMInterface` + `EntityManagerInterface` as singletons in your framework's DI.
 
 This skill does not track community bridge versions or APIs — verify against the package's README/Packagist.
 
 ---
 
-## Schema-build strategies: dev vs prod
+## Dev vs prod
 
-**Dev (schema changes often):**
-- Schema cache off — the compiler runs on every PHP-process / worker boot (slow, but never stale when attributes change).
-- `warmup` off — providers stay lazy, so editing/adding entities doesn't fight a pre-built cache and the boot stays cheap.
-- `cycle:sync` applies changes directly without migrations.
-- Locally use SQLite or PostgreSQL in Docker.
+The caches and `warmup` are described above (Spiral: "Two independent boot-time caches", "ORM warmup"; standalone: "Schema cache"). What differs per environment:
 
-**Prod:**
-- Schema cache **on**. Invalidated on deploy (via CI: clear `runtime/cache/` or delete the standalone cache file).
-- `warmup` — **on for long-running runtime** (RoadRunner/FrankenPHP/Swoole/Octane), **off for PHP-FPM** (every request is a new process — pre-building all roles is wasted work).
-- `cycle:migrate` generates diffs → migrations committed to git → `migrate` runs in the pipeline.
-- No `cycle:sync` in prod.
-
-In Spiral this is toggled by the `schema.cache` / `warmup` flags in `app/config/cycle.php` (cache backend is `MemoryInterface`, see above). In parallel, turn on `TOKENIZER_CACHE_TARGETS=true` in prod so entity-class discovery isn't redone on every worker boot either. In standalone — you decide whether to read `$cacheFile` or whether to call `$orm->prepareServices()` after bootstrap yourself.
+- **Dev** — caches and `warmup` off, so attribute edits take effect on the next boot. Schema changes go straight to the DB via `cycle:sync` (standalone: `Generator\SyncTables`).
+- **Prod** — caches on and invalidated on deploy; `warmup` for long-running runtimes only. Schema changes go through migrations: `cycle:migrate` generates the diff → migrations committed to git → `migrate` applies them in the deploy pipeline. `cycle:sync` stays out of prod. Standalone: call `$orm->prepareServices()` after bootstrap yourself when you want warmup.
 
 ---
 
@@ -430,16 +435,16 @@ What it controls: how the ORM treats an **uninitialized** relation property on a
 
 Where it acts: `Cycle\ORM\Transaction\UnitOfWork` (master and slave relations) when building commands. It does not affect `Select` reads on its own, but it is what lets "untouched" relations survive a save without side effects.
 
-When to enable: **always, in any new code.** The `true` behavior is the semantics the ORM was designed for in the first place; `false` is kept solely for compatibility with projects written before 2.11. The most painful scenario under `false` is partial hydration (a `Select` without `load()` on some relations) followed by a save: every "not loaded and not touched" relation gets nulled — a classic source of silent regressions.
+The most painful scenario under `false` is partial hydration (a `Select` without `load()` on some relations) followed by a save: every "not loaded and not touched" relation gets nulled — a classic source of silent regressions.
 
 ### `groupByToDeduplicate` (default `false`, recommended `true`)
 
 What it controls: whether `Select` injects `GROUP BY <primaryKey>` when `JOIN`s combine with `limit`/`offset`.
 
 - `false` — no `GROUP BY`. JOINs multiply rows, `LIMIT` cuts by rows, so the same root entity can come back several times / the actual entity count is less than `LIMIT`.
-- `true` — `Select::addGroupByPK()` adds `GROUP BY` on the root PK whenever there are joined loaders and `limit > 1` or `offset > 0`. The resulting entity count is correct.
+- `true` — `Select::addGroupByPK()` adds `GROUP BY` on the root columns whenever there are joined loaders and `limit > 1` or `offset > 0`. The resulting entity count is correct.
 
-Where it acts: only in `Select` and only when joined loaders exist (`load()` / `with()` via `LoadOptions::method = JOIN`).
+Where it acts: only when the `Select` has `with()` joins. Loaders added by `load()` never land in the join list, even with `method: JOIN`; for `*Many` relations `load(..., method: JOIN)` together with `limit()` throws `LoaderException: Unable to load data using join with limit on parent query` instead.
 
 Edge case: on MSSQL `GROUP BY` requires every selected column to be listed — the corresponding fix landed in `cycle/orm` 2.11 (commit `356874de`). On exotic dialects or custom query modifiers — run the tests.
 
@@ -447,7 +452,7 @@ Edge case: on MSSQL `GROUP BY` requires every selected column to be listed — t
 
 ## Common pitfalls
 
-- **Behavior attributes silently don't work** — in Spiral you forgot to add `EntityBehaviorBootloader` (it's in `spiral/cycle-bridge` but not in `BridgeBootloader::DEPENDENCIES` — wire it separately); in standalone / other frameworks — you didn't pass `commandGenerator:` to `ORM::__construct`. The most common problem when migrating from Doctrine or older projects.
+- **Behavior attributes silently don't work** — in Spiral you forgot to add `EntityBehaviorBootloader` (it's in `spiral/cycle-bridge` but not in `BridgeBootloader::DEPENDENCIES` — wire it separately); in Yii3 — no `CommandGeneratorInterface => EventDrivenCommandGenerator` binding in `config/di.php`; in standalone / other frameworks — you didn't pass `commandGenerator:` to `ORM::__construct`. The most common problem when migrating from Doctrine or older projects.
 - **Schema cache in prod without invalidation on deploy** — you changed an Entity, deployed, but the cache is still stale → code uses new properties, schema is old → fatal/silent breakage. The deploy script must remove `cycle-schema.php` or clear the cache folder.
 - **`spiral/tokenizer` doesn't see entity classes** — you forgot to add the directory in `tokenizer.directories`. See `schema-troubleshooting.md` ("class doesn't show up in the schema").
 - **Conflict with `Doctrine\ORM\Mapping\Entity` import** — when migrating from Doctrine ORM, the IDE often slips in the old namespace. Cycle looks for `Cycle\Annotated\Annotation\Entity`. Verify imports in new files.
@@ -455,9 +460,8 @@ Edge case: on MSSQL `GROUP BY` requires every selected column to be listed — t
 - **Standalone bootstrap without `GenerateModifiers`/`RenderModifiers`** — behavior attributes don't modify the schema. They **must** be included in the `Compiler::compile()` pipeline, even if behaviors aren't used right now (for the future).
 - **`Annotated\Embeddings($classLocator)` / `Annotated\Entities($classLocator)` throw `TypeError`** — the constructors expect `Cycle\Annotated\Locator\EmbeddingLocatorInterface` / `EntityLocatorInterface`, not `Spiral\Tokenizer\ClassLocator` directly. Wrap them: `new TokenizerEmbeddingLocator($classLocator)` / `new TokenizerEntityLocator($classLocator)`.
 - **Standalone pipeline without `Generator\SyncTables` does not create tables in the DB** — `RenderTables` builds the schema in Registry, but tables only materialize through `SyncTables` (dev-only: immediate `CREATE/ALTER`) or through migrations (`cycle:migrate` + apply). Bootstrap runs cleanly, then you hit "no such table" — that step was missing.
-- **Cross-database setup** — Cycle supports multiple `database:` entries in one ORM. But FKs between them are impossible (see `cycle-orm-attributes/references/relations.md`, `fkCreate: false`). Plan the boundaries.
-- **Legacy code relies on "`unset($entity->collection)` = detach"** — this only holds with `ignoreUninitializedRelations = false` (the 2.12 default). Flipping the flag — or upgrading to the next major where it becomes `true` — turns `unset` into a no-op, and you must assign `$entity->collection = new ArrayCollection()` explicitly to clear. Audit partial-update tests before the upgrade.
-- **`LIMIT` with `load(..., method: JOIN)` returns a "torn" page** — without `groupByToDeduplicate` the duplicated root rows after a JOIN eat part of the page. Enable the flag when using the joined-load strategy together with pagination (`Select::limit()` / `offset()`).
+- **Legacy code relies on "`unset($entity->collection)` = detach"** — this only holds with `ignoreUninitializedRelations = false` (the current default). Flipping the flag — or upgrading to the next major where it becomes `true` — turns `unset` into a no-op, and you must assign `$entity->collection = new ArrayCollection()` explicitly to clear. Audit partial-update tests before the upgrade.
+- **`with('hasMany')` + `limit()` returns a short page** — the JOIN duplicates root rows and they eat part of the page. Enable `groupByToDeduplicate` or add `distinct()`.
 
 ## Checklist
 
@@ -471,18 +475,20 @@ Edge case: on MSSQL `GROUP BY` requires every selected column to be listed — t
 
 ### Yii3
 1. `composer require yiisoft/yii-cycle` is installed. Configuration and DI bindings follow the package's README.
-2. Optionally: `yiisoft/data-cycle` for Yii Data, `yiisoft/rbac-cycle-db` for RBAC.
+2. If behaviors are used — `CommandGeneratorInterface => EventDrivenCommandGenerator` is bound in `config/di.php`.
+3. Optionally: `yiisoft/data-cycle` for Yii Data, `yiisoft/rbac-cycle-db` for RBAC.
 
 ### Standalone
 1. The minimum is installed: `cycle/orm`, `cycle/database`, `cycle/annotated`, `cycle/schema-builder`.
 2. The bootstrap assembles `ORM` via `Factory($dbal)` + `Schema(compiled)`.
-3. The Compiler pipeline includes `Annotated\Embeddings`/`Entities`/`TableInheritance`/`MergeColumns`/`MergeIndexes` + `Generator\GenerateRelations`/`GenerateModifiers`/`ValidateEntities`/`RenderTables`/`RenderRelations`/`RenderModifiers`/`GenerateTypecast`.
-4. Schema cache is implemented for prod (file cache with invalidation on deploy).
-5. For behaviors — `EventDrivenCommandGenerator` is passed to `ORM::__construct(commandGenerator:)`.
-6. For partial-save scenarios / JOIN-based pagination — `Cycle\ORM\Options` is set deliberately (`withIgnoreUninitializedRelations` / `withGroupByToDeduplicate`) and passed to `ORM::__construct(options:)`.
+3. The Compiler pipeline starts with `Generator\ResetTables` and includes `Annotated\Embeddings`/`Entities`/`TableInheritance`/`MergeColumns`/`MergeIndexes` + `Generator\GenerateRelations`/`GenerateModifiers`/`ValidateEntities`/`RenderTables`/`RenderRelations`/`RenderModifiers`/`ForeignKeys`/`GenerateTypecast`, in the order of the example above.
+4. Schema cache is implemented for prod (file cache or `cycle/schema-provider`, invalidated on deploy).
+5. If migrations are applied in prod — `cycle/migrations` is in `require`, not `require-dev`.
+6. For behaviors — `EventDrivenCommandGenerator` is passed to `ORM::__construct(commandGenerator:)`.
+7. For partial-save scenarios / JOIN-based pagination — `Cycle\ORM\Options` is set deliberately (`withIgnoreUninitializedRelations` / `withGroupByToDeduplicate`) and passed to `ORM::__construct(options:)`.
 
 ### Other frameworks (Laravel / Symfony / etc.)
-1. Picked the right package: community bridge from Packagist (e.g. `wayofdev/laravel-cycle-orm-adapter` for Laravel) or a self-rolled wrapper around the standalone bootstrap above.
+1. Picked the right package: community bridge from Packagist (e.g. `wayofdev/laravel-cycle-orm-adapter` for Laravel) or a hand-rolled wrapper around the standalone bootstrap above.
 2. `Cycle\ORM\ORMInterface` and `EntityManagerInterface` are registered as singletons in the framework's DI.
 3. For behaviors — the chosen package wires `EventDrivenCommandGenerator` itself, or you do it manually.
 4. No stray `use Doctrine\ORM\Mapping\...` in entity classes (relevant when migrating from Doctrine).

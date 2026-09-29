@@ -37,10 +37,11 @@ public function make(
 ```
 
 What it does:
-1. Resolves the role (from a class-string or a role string).
-2. Calls `MapperInterface::init($data)` — the mapper decides which class to instantiate (for STI/JTI it picks the child via the discriminator) and how (the default `Mapper` instantiates a **proxy subclass** with infrastructure for lazy-load relations and dirty-tracking; `PromiseMapper` uses `Instantiator` without inheritance).
-3. Calls `MapperInterface::hydrate($entity, $data)` — the hydrator writes fields via reflection (the constructor is not called).
-4. Registers the entity in the **Heap** with status `Node::NEW`.
+1. Resolves the role (from a class-string or a role string; a JTI child role arrives in loaded rows as `@role`).
+2. Casts `$data` — only with `typecast: true` (below).
+3. Calls `MapperInterface::init($data)` — the mapper decides which class to instantiate and how: the default `Mapper` builds a **proxy subclass** that lazy-loads relations, `PromiseMapper` uses `Instantiator` without inheritance. Under STI, `Mapper` and `PromiseMapper` pick the child class by the discriminator value.
+4. Attaches the entity to the **Heap** with a `Node` of status `Node::NEW`. The Node keeps the data snapshot that dirty-tracking later diffs against.
+5. Calls `MapperInterface::hydrate($entity, $data)` — writes the fields; the constructor is not called.
 
 The `$typecast: true` argument runs `$data` through `Mapper::cast()`. Useful when the data comes from an external source in "raw" form (`'2026-01-01'` instead of `DateTimeImmutable`, `'42'` instead of `int`). Default is `false`, since code usually builds already-typed values.
 
@@ -55,11 +56,11 @@ $user = $orm->make(User::class, [
 $user = $orm->make(User::class, $rawRow, typecast: true);
 ```
 
-Leave `$status` as `Node::NEW` for **new** entities. `Node::MANAGED` is for niche cases (restoring an entity from an external snapshot with an existing PK without hitting the DB) — not a thing in normal code.
+Leave `$status` as `Node::NEW` for **new** entities. `Node::MANAGED` is for niche cases (restoring an entity from an external snapshot with an existing PK without hitting the DB) and rarely needed.
 
 ### Bare `new` — when it's OK, when it's not
 
-Technically `$em->persist(new User(...))->run()` works. Assigning FK columns directly (`$comment->postId = 1`) is a perfectly normal pattern. **The subtlety is in the combination:** default mapper + a bare-`new` entity + a relation property whose type has no slot a `Reference` object can fit into (bare `Post`, `?Post`, any strict typing without a union containing `ReferenceInterface`) → persist fires an unexpected SELECT. Remove any one link of that chain and the problem goes away.
+Technically `$em->persist(new User(...))->run()` works. Assigning FK columns directly (`$comment->postId = 1`) is a perfectly normal pattern. **The subtlety is in the combination:** default mapper + a bare-`new` entity + a relation property whose type cannot hold a `Reference` object (e.g. `Post` or `?Post`) → persist fires an unexpected SELECT. Remove any one link of that chain and the problem goes away.
 
 ```php
 #[Entity]
@@ -102,18 +103,23 @@ That is exactly why a union with `ReferenceInterface` (option 2 below) lifts the
    ```
    `make()` instantiates the entity through the same proxy that Select uses. Re-hydration after INSERT drops a `Reference` into the hidden proxy slot — no SELECT.
 
-2. **Union type on the relation property** (a real union — `?Post` does not count) — if you want to keep bare `new`:
+2. **Union type on the relation property** — if you want to keep bare `new`:
    ```php
    use Cycle\ORM\Reference\ReferenceInterface;
 
    #[BelongsTo(target: Post::class, innerKey: 'postId')]
    public Post|ReferenceInterface $post;
    ```
-   Now Cycle has a type slot to drop a `Reference` into, even without a proxy. The cost: on read, the property may be a `Reference` and you must resolve it via `$orm->resolve($post)`.
+   Now Cycle has a type slot to drop a `Reference` into, even without a proxy. The cost: when the target was not in the Heap at hydration time, the property holds a plain `Reference` — load it yourself:
+   ```php
+   $post = $c->post instanceof ReferenceInterface
+       ? $orm->get($c->post->getRole(), $c->post->getScope())
+       : $c->post;
+   ```
 
 **With `PromiseMapper`** (`cycle/orm-promise-mapper`) — a union with `ReferenceInterface` is mandatory (the mapper stores relations through `Reference` natively, without proxy inheritance). Once you have it, `new Entity()` becomes a first-class pattern, the extra-SELECT trap goes away, and `$orm->make()` is no longer required. Fits projects where explicit relation loading is the norm.
 
-**When bare `new` is safe:** entities without relations; or where the relation property has **no** type declaration, or is typed as `object`/`mixed`, or has a union containing a type `Reference` is an instance of (in practice — `ReferenceInterface`). `?Post` (= `Post|null`) **does not save you** — reflection sees a single `Post` with `allowsNull`, not a union, and the hydrator still eagerly resolves. In all the safe cases `new Entity(); $entity->fkColumn = ...; $em->persist();` is a correct path.
+**When bare `new` is safe:** the entity has no relations, or every relation property is untyped, typed `object`/`mixed`, or a union with `ReferenceInterface`. `?Post` is not a union — reflection sees a single nullable `Post` — so it still triggers the eager SELECT.
 
 ### Where to put the `make()` call
 
@@ -143,7 +149,7 @@ final class UserFactory
 
 ## Persist
 
-`EntityManagerInterface` (`Cycle\ORM\EntityManagerInterface`) is the default entry point for writes. In DI containers it is usually registered as a singleton — fine for the simple "one EM per request / tick / command" path. If you need several isolated write scopes inside one process (nested transactions on different aggregates, parallel pipelines, a side-handler running inside the main flow), the singleton EM is not the right tool — drop down to the `UnitOfWork` class directly. See [[cycle-orm-best-practice]].
+`EntityManagerInterface` (`Cycle\ORM\EntityManagerInterface`) is the default entry point for writes. In DI containers it is usually registered as a singleton — fine for the simple "one EM per request / tick / command" path. If you need several isolated write scopes inside one process (nested transactions on different aggregates, parallel pipelines, a side-handler running inside the main flow), create a separate `new EntityManager($orm)` per scope — each one holds its own Unit of Work queue, while all of them share the ORM's Heap.
 
 ```php
 interface EntityManagerInterface
@@ -154,16 +160,6 @@ interface EntityManagerInterface
     public function run(): StateInterface;
     public function clean(): static;
 }
-```
-
-**Basic cycle:**
-
-```php
-$user = $orm->make(User::class, ['email' => 'alice@example.com']);
-
-$em->persist($user)->run();    // ← INSERT
-$user->name = 'Alice';
-$em->persist($user)->run();    // ← UPDATE (same object, identity by PK)
 ```
 
 `persist()` is **queueing**, not writing. SQL runs only on `run()`. You can queue many entities and apply them in a single batch:
@@ -190,7 +186,7 @@ public function run(bool $throwException = true, ?RunnerInterface $runner = null
 
 - **`Runner::innerTransaction()`** (default). Cycle opens a transaction on each `Driver` involved, commits on success, rolls back on failure. Fits when `run()` is itself the atomic write boundary.
 - **`Runner::outerTransaction(strict: true)`**. Cycle opens and closes nothing — it expects you to have already opened a transaction externally (`$db->begin()`). For each driver it checks a transaction is in progress; otherwise it throws `RunnerException`. Use when `run()` is part of a larger transaction (several UoW runs under one frame, manual composition with native SQL).
-- **`Runner::outerTransaction(strict: false)`**. Same as above but without the check — Cycle does not touch driver transaction state at all. Use when part of the UoW intentionally runs without transactions (replication, migrations, sidesteps).
+- **`Runner::outerTransaction(strict: false)`**. Same as above but without the check — Cycle does not touch driver transaction state at all. Use when part of the UoW intentionally runs without transactions (replication, migrations, other deliberately non-transactional writes).
 
 In both outer modes Cycle still calls `complete()` / `rollback()` on commands implementing `CompleteMethodInterface` / `RollbackMethodInterface` — that's about domain post-effects, not DB transactions.
 
@@ -233,25 +229,7 @@ There's no built-in **soft-delete** API — assemble it from parts:
 1. **`SoftDelete` behavior** (`cycle/entity-behavior`) — adds a timestamp column (`deletedAt` by default, or the column of a declared property — set `column:` for `deleted_at`) and writes a timestamp instead of a real DELETE. See `cycle-orm-attributes/references/behaviors.md`.
 2. **Reads with a `deleted_at` filter** — two options, not mutually exclusive:
    - **Scope on the entity** — a global filter that hides "deleted" rows in every Select automatically (`#[Entity(scope: NotDeletedScope::class)]`). Applies to all queries without anyone remembering to. See `orm-extensions.md`.
-   - **Scope methods on a custom repository** — clone the repository, layer a condition onto its inner `Select`, and return the new repository. This is exactly how the built-in `forUpdate(): static` works. Visible in code, chainable, and repository-level methods (`findAll`/`findOne`/`findByPK`) immediately respect the filter.
-
-   ```php
-   use Cycle\ORM\Select\Repository;
-
-   /** @extends Repository<User> */
-   final class UserRepository extends Repository
-   {
-       public function active(): static
-       {
-           $repo = clone $this;           // the base __clone deep-clones the Select
-           $repo->select->where('deleted_at', null);
-           return $repo;
-       }
-   }
-
-   $activeUsers = $userRepo->active()->findAll();
-   $matching    = $userRepo->active()->findAll(['email' => 'x@example.com']);
-   ```
+   - **A builder method on a custom repository** — `$userRepo->active()->findAll()`, where `active()` returns a clone of the repository with `deleted_at IS NULL` on its `Select`. Visible in code and chainable. Contract and examples — [repositories.md](repositories.md), "Immutable builder methods".
 
 The behavior writes the column; either the scope or repository methods filter on it. Scope wins when "hide deleted" is a domain-wide invariant; explicit methods win when the filter is local and you want it visible in code.
 
@@ -262,14 +240,14 @@ The behavior writes the column; either the scope or repository methods filter on
 `run()` is **transactional on its own** — all queued operations run atomically (assuming the driver supports transactions). You only need an explicit wrapper to include **additional non-ORM operations** (writing to another store, logging, issuing credits, etc.) in the same transaction:
 
 ```php
-$dbal = $orm->getSource(User::class)->getDatabase();
-$dbal->transaction(function () use ($em, $user, $auditLog) {
-    $em->persist($user)->run();
+$db = $orm->getSource(User::class)->getDatabase();
+$db->transaction(function () use ($em, $user, $auditLog) {
+    $em->persist($user)->run();   // default runner nests into the open transaction (savepoint)
     $auditLog->log('user.updated', $user->id);
 });
 ```
 
-When several drivers/DBs are involved, `run()` does "saga-style" coordination — it tries to commit all participating transactions and rolls back if one fails. This is not XA-grade; cross-DB operations in production need a different design (outbox, eventual consistency).
+With several drivers/DBs, `run()` opens a transaction on each one. A failure while executing commands rolls all of them back; after that, the drivers commit one by one, and a commit failing midway leaves the earlier commits in place — there is no two-phase commit and no compensation. Cross-DB writes that must stay consistent need a different design (outbox, eventual consistency).
 
 ### `clean()`
 
@@ -279,15 +257,10 @@ Drops the queue without executing it. Rarely needed — the queue is already emp
 
 ## Common pitfalls
 
-- **Extra SELECT after INSERT with `new` + typed relation property** — see the Comment/Post case above. Fixes: `$orm->make()`, union with `ReferenceInterface`, or `PromiseMapper`.
-- **Forgot `->run()`** — changes never reach the DB. `persist()` queues; `run()` executes.
-- **`persist()` without a follow-up `run()` in a script/test** — the classic "everything succeeded but the DB is empty." If a helper wraps the call, check that the helper actually runs `run()`.
-- **Mutating an entity between `persist()` and `run()`** — those mutations DO make it to the DB (the snapshot is taken at `run` time). Want a snapshot now — `persistState()`.
-- **`persistState()` on an entity that isn't NEW or MANAGED** — behavior is undefined; only use it for entities already registered in the Heap.
+- **"Everything succeeded but the DB is empty"** — `persist()` only queues; nothing is written until `run()`. If a helper wraps the call, check that the helper actually calls `run()`.
 - **`make($class, $rawData)` without `typecast: true`** — fields stay in raw form. The hydrator doesn't throw (it writes what you gave it), but a property typed `DateTimeImmutable` will hold a `string` and blow up with `TypeError` on first read.
 - **`delete()` without cascade — related rows aren't deleted** automatically. Cascade has to live either in the relation attribute or in the FK schema (`ON DELETE CASCADE`).
-- **The Heap cache makes `findByPK(42)` idempotent** within a single `$em`. To force a fresh read from the DB — `$em->clean()` or a new ORM instance. Scope bypass (`->scope(null)`) doesn't help: the Heap caches independently of scope.
-- **Using the Repository as a creation site** — anti-pattern. Create through a service/factory, the repository only reads.
+- **A repeated `findByPK(42)` returns stale values** — the query runs, but an entity already in the Heap comes back as the same object and fresh column values are not written into it. The Heap belongs to the ORM and is shared by every EntityManager. To force a fresh read — `$em->clean(cleanHeap: true)` (the `EntityManager` class; the interface's `clean()` has no parameter) or `$orm->getHeap()->clean()`. Scope bypass (`->scope(null)`) doesn't help: the Heap caches independently of scope.
 - **`new` for an STI/JTI parent** — `new Animal()` instantiates exactly `Animal`, even if the `discriminator` says it should be `Dog`. With `$orm->make(Animal::class, ['type' => 'dog'])` the mapper picks the correct class.
 
 ---
@@ -300,5 +273,5 @@ Drops the queue without executing it. Rarely needed — the queue is already emp
 4. Writing: `$em->persist($entity)->run()`. Batch — many `persist()`, one `run()`.
 5. `cascade: true` (default) — related entities are written together; explicit `false` — only the object itself.
 6. Soft-delete — via a behavior or a scope, not by hand-zeroing `deleted_at` (you lose transparency).
-7. Multi-step business operations including non-ORM writes — wrap in `$dbal->transaction(...)`, don't stack `run()` calls.
-8. After a failed `run()` — the Heap may already be corrupted (some entities got new PKs, some didn't); don't reuse the `$em`, bring up a fresh one.
+7. Multi-step business operations including non-ORM writes — one `$db->transaction(...)` around all of them; every `run()` inside nests into it (or pass `Runner::outerTransaction()`).
+8. After `run()` fails on a command, re-`persist()` whatever you retry: the transaction is rolled back, the Heap nodes are reset to their pre-run state, and `EntityManager::run()` has already dropped its queue.

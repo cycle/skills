@@ -7,7 +7,7 @@ Cycle supports **five** basic relation types, plus **four polymorphic** variants
 | `BelongsTo`        | **this** entity              | one → one (parent)       | "I have an owner/parent"                                |
 | `HasOne`           | **the other** entity         | one → one                | "I have one child, the FK is on it"                     |
 | `HasMany`          | **the other** entity         | one → many               | "I have many children, the FK is on them"               |
-| `RefersTo`         | **this** entity              | one → one (weak)         | like BelongsTo, but no cascade — soft reference         |
+| `RefersTo`         | **this** entity              | one → one (deferred)     | like BelongsTo, but the FK is written by a follow-up UPDATE — breaks insert cycles |
 | `ManyToMany`       | **pivot table**              | many → many              | "many-to-many" via `through`                            |
 | `BelongsToMorphed` | **this** + morph column      | one → one (polymorphic)  | "one owner from a set of unrelated types"               |
 | `RefersToMorphed`  | **this** + morph column      | one → one (polymorphic)  | like BelongsToMorphed, but deferred — breaks morph cycles |
@@ -59,21 +59,17 @@ Decide by **two questions**:
 | Condition                                                                                          | Use                                             |
 |----------------------------------------------------------------------------------------------------|-------------------------------------------------|
 | A owns/creates B (standard parent–child)                                                           | `BelongsTo` (cascade-save by default)           |
-| B is external (auth module, vendor entity, read-only from A's perspective)                         | `RefersTo` (`cascade: false`)                   |
+| B is external (auth module, vendor entity, read-only from A's perspective)                         | `BelongsTo` with `cascade: false`               |
 | There's a cycle `A.foo → B` + `B.bar → A` (`BelongsTo` on both sides creates an insert-time cycle) | Make **one** side `RefersTo` to break the cycle |
-| You need a soft reference: an FK without cascade management                                        | `RefersTo`                                      |
+| A row may reference itself (`$node->ref = $node`)                                                  | `RefersTo`                                      |
 
-Canonical cycle example: `Order.lastInvoice` + `Invoice.order`. `BelongsTo` on both sides → Cycle can't determine the insert order. Fix: turn one of the two into `RefersTo`.
+Canonical cycle example: `Order.lastInvoice` + `Invoice.order`. `BelongsTo` on both sides → Cycle can't determine the insert order. Fix: turn one of the two into `RefersTo`. `RefersTo` inserts the row without the FK and writes it with a follow-up UPDATE once the target has a key.
 
 > The same cycle problem exists for **morphed** relations: `BelongsToMorphed` is also a hard dependency. To break a self-linked or cyclic morphed reference (`A → A`, `A → B → A`), use `RefersToMorphed` — the morphed counterpart of `RefersTo` (see the "Polymorphic (morphed) relations" section).
 
 ### Step 4. ManyToMany — via `through`
 
 `ManyToMany` always requires a pivot entity (`through:`) — a separate class with its own PK and two FKs. Details in the "ManyToMany — `through`" section below.
-
-### The one-line rule
-
-**"Whoever owns the FK column declares `BelongsTo` or `RefersTo`. The opposite side declares `HasOne` / `HasMany`."** Everything else is cascade and cycle nuance.
 
 ---
 
@@ -107,7 +103,7 @@ class Customer
      * @var list<Order>
      */
     #[HasMany(target: Order::class, outerKey: 'customer_id')]
-    public array $orders = [];     // or a typed collection — see below
+    public array $orders = [];     // or a collection class — see the `collection` section
 }
 ```
 
@@ -119,7 +115,7 @@ class Customer
 
 ## Keys: innerKey, outerKey
 
-**`innerKey` and `outerKey` are entity field (property) names, not DB column names.** The column name is stored separately on the field — taken from `#[Column(name: ...)]` or, if not overridden, the snake_case of the property name (`$customerId` → `customer_id`, `annotated/src/Configurator.php:257`).
+**`innerKey` and `outerKey` are entity field (property) names, not DB column names.** The column name is stored separately on the field — taken from `#[Column(name: ...)]` or, if not overridden, the snake_case of the property name (`$customerId` → `customer_id`).
 
 - **`innerKey`** — field name in **the same entity** where the attribute is declared (the "near side").
 - **`outerKey`** — field name in the **target entity** (the "far side").
@@ -155,7 +151,7 @@ public ?Customer $customer = null;
 | `HasMany`    | primary field name of own entity     | `{parentRole}_{innerKey}`            |
 | `ManyToMany` | primary field name of own entity     | primary field name of target entity  |
 
-All values are **field names**. Cycle will fill these in, but **prefer to spell them explicitly**.
+All values are **field names**. `{relationName}` is the property name: `$customer` defaults to `customer_id`, and renaming the property to `$buyer` changes the expected FK field to `buyer_id`. Cycle will fill these in, but **prefer to spell them explicitly**.
 
 ---
 
@@ -173,14 +169,14 @@ On `$em->delete($parent)->run()` Cycle **does not delete children itself** — i
 Consequences:
 - Deleting children in the same transaction works only with `fkCreate: true` + `fkAction: 'CASCADE'` (or `fkOnDelete: 'CASCADE'`).
 - With `fkCreate: false`, or `fkOnDelete: 'NO ACTION'`/`'SET NULL'`, children survive after the parent is gone (orphaned, or with `NULL` FK). Clean them up manually — either an explicit `$em->delete($child)` for each, or a `DELETE FROM children WHERE parent_id = ...` via DBAL.
-- Dis-association (`$parent->children = []`, an item removed from the collection) is a **different** case: here Cycle does enqueue the child row for DELETE (`HasMany::prepare()` → `deleteChild()`, `vendor/cycle/orm/src/Relation/HasMany.php:80-84`). That's a reaction to a collection change during `persist()`, not a cascade from parent deletion.
+- Dis-association (`$parent->children = []`, an item removed from the collection) is a **different** case: here Cycle does enqueue the child row for DELETE (`HasMany::prepare()` → `deleteChild()`). That's a reaction to a collection change during `persist()`, not a cascade from parent deletion.
 
 ### `fkCreate: false`
 
 Don't create an FK at the DB level. The relation still works (Cycle knows about it), but there's no FOREIGN KEY constraint in the schema.
 
 **When useful:**
-- **The paired side already creates the same FK.** When a relation is declared from both sides (e.g. `BelongsTo` on Order + `HasMany` on Customer), both renderers target the FK on the same column `orders.customer_id`. DBAL deduplicates FKs by columns (`vendor/cycle/database/src/Schema/AbstractTable.php:391`), but `fkAction`/`fkOnDelete` from the side rendered last overwrite values from the first — the configuration becomes traversal-order-dependent. To avoid surprises, set `fkCreate: false` on **one** side (typically on `HasOne`/`HasMany` — the FK logically belongs to the side holding the FK column, i.e. `BelongsTo`/`RefersTo`).
+- **The paired side already creates the same FK.** When a relation is declared from both sides (e.g. `BelongsTo` on Order + `HasMany` on Customer), both renderers target the FK on the same column `orders.customer_id`. DBAL deduplicates FKs by columns, but `fkAction`/`fkOnDelete` from the side rendered last overwrite values from the first — the configuration becomes traversal-order-dependent. To avoid surprises, set `fkCreate: false` on **one** side (typically on `HasOne`/`HasMany` — the FK logically belongs to the side holding the FK column, i.e. `BelongsTo`/`RefersTo`).
 - Cross-DB relations (an FK between different databases is impossible).
 - SQL Server: an FK on an identity column with CASCADE is forbidden; on a non-PK/unique column is forbidden. If you hit a restriction and can't restructure — `fkCreate: false`.
 - Performance/operational reasons (bulk loads, migrations under load).
@@ -203,13 +199,13 @@ Allowed values: `'CASCADE'`, `'NO ACTION'`, `'SET NULL'`.
 
 ### `indexCreate: false`
 
-Don't create an index on the FK column. By default Cycle creates one — a reasonable default for JOIN performance. Disabling makes sense when there's a composite index with this column first, and the single index duplicates part of the pyramid.
+Don't create an index on the FK column. By default Cycle creates one — a reasonable default for JOIN performance. Disabling makes sense when a composite index already starts with this column: the single-column index is redundant with its leading column.
 
 ---
 
 ## `cascade`
 
-By default `cascade: true` for all relations (except `RefersTo`, which is also `true`, but usually explicitly set to `false` — see below).
+`cascade: true` is the default for every relation, `RefersTo` included.
 
 `cascade: true` — on `persist($parent)` Cycle saves related entities too (if they're new or changed).
 
@@ -222,7 +218,6 @@ $em->persist($order)->run();          // saves BOTH order AND customer (BelongsT
 `cascade: false` — related entities need to be saved by hand with a separate `persist()`.
 
 **When `cascade: false`:**
-- Round-trip referential cycles (see below).
 - The related side's entity is read-only from your point of view (e.g., `User` belongs to the auth module, your `Order` just references it).
 - You want explicit control over order and transaction boundary.
 
@@ -299,7 +294,7 @@ public Customer $customer;
 
 When the schema is built Cycle registers a `hasMany` relation in the Customer entity named `'orders'`. Useful when you want both sides of a bidirectional relation described in one place, or when the target entity is outside your control (a vendor package, generated code).
 
-### Required arguments
+### Arguments
 
 - **`as:`** — the relation name on the target side (`string`).
 - **`type:`** — the mirror relation type (`string`).
@@ -324,6 +319,7 @@ The schema builder validates the pair in `<Relation>::inverseRelation()` and thr
 ### `inverse:` pitfalls
 
 - **`ManyToMany` with `where:` or `throughWhere:` can't be inversed** — `RelationException('Unable to inverse ManyToMany relation with where scope.')`.
+- **`HasMany` with `where:` can't be inversed** — `RelationException('Unable to inverse HasMany relation with where scope.')`.
 - **If the target entity already has a relation named `as:`** — it is **silently overwritten** by the generated inverse (`registerRelation` just writes into the map by key, no collision check). Convenient when you want to replace someone else's declaration, easy to shoot yourself in the foot otherwise.
 
 ---
@@ -356,7 +352,7 @@ Collection-factory configuration (built-in `ArrayCollectionFactory`/`DoctrineCol
 
 ---
 
-## `where` and `orderBy` (HasMany, ManyToMany, MorphedHasMany)
+## `where` and `orderBy` (HasMany, ManyToMany; MorphedHasMany has `where` only)
 
 You can constrain the relation with a condition on the target side:
 
@@ -437,26 +433,7 @@ foreach ($tags as $tag) {
 }
 ```
 
-With `collection: 'array'` or `'illuminate'`, pivot data is **lost** during hydration. API details and registration — `cycle-orm/references/collections.md`.
-
----
-
-## Relation name determines key defaults
-
-Remember the default `innerKey: '{relationName}_{outerKey}'`? The relation name is the **property name**:
-
-```php
-#[BelongsTo(target: Customer::class)]   // innerKey default = 'customer_id' (property name + _id)
-public Customer $customer;
-```
-
-If you rename `$customer` → `$buyer`:
-```php
-#[BelongsTo(target: Customer::class)]   // innerKey default = 'buyer_id'
-public Customer $buyer;
-```
-
-— then the FK column is expected to be `buyer_id`. So when renaming a relation property, always **check the default names**.
+The default `array` collection and Illuminate collections **drop** pivot data during hydration. API details and registration — `cycle-orm/references/collections.md`.
 
 ---
 
@@ -506,41 +483,23 @@ A polymorphic relation has **two** key fields on the "near" side (as everywhere,
 
 **Cycle creates both fields itself** if they aren't declared explicitly — but it's almost always better to declare them by hand to control `length`, `nullable`, indexes.
 
-### `target` — is not a specific entity
+### `target` — an interface
 
-`target:` for a morphed relation is a **common type/marker**:
-- an interface (`Commentable::class`),
-- an abstract class,
-- even just `target: 'mixed'` if there's no common type.
+`target:` for a morphed relation is an **interface** (`Commentable::class`) that every possible target entity implements. The schema builder collects the targets among registered entities via `class_implements()`. At runtime Cycle reads the role from morphKey to pick the entity on load, and writes the related object's role into morphKey on save.
 
-Cycle doesn't itself check that target is an interface with implementations. The relation works at runtime: on load Cycle reads morphKey, looks up the entity by role, hydrates. On write — takes the role from the object, puts it into morphKey.
-
-**A strong convention** is to have a common interface/abstract class so PHPStan/IDE can check that the assigned entity fits.
+- All implementors must have the same primary-key field names; otherwise the build fails with `Inconsistent primary key reference (photo). PKs: (photoId). Required PKs [article]: (id).`
+- An interface that no entity implements → `Unable to find morphed parent.`
+- An abstract class or `'mixed'` as `target:` → ``Unable to resolve `comment`.`parent` relation target (not found or invalid)``.
 
 ### `BelongsToMorphed`
 
 "I have one owner, and it can be of any type from a set."
 
-```php
-public function __construct(
-    string $target,
-    bool $cascade = true,
-    bool $nullable = true,                  // ← note: default true (unlike BelongsTo)
-    array|string|null $innerKey = null,
-    array|string|null $outerKey = null,
-    ?string $morphKey = null,
-    int $morphKeyLength = 32,
-    bool $indexCreate = true,
-    string $load = 'lazy',
-    ?Inverse $inverse = null,
-)
-```
-
-**`nullable: true` by default** — a polymorphic FK is often optional. If the relation is required — set `nullable: false` explicitly.
+**`nullable: true` by default** (unlike `BelongsTo`) — a polymorphic FK is often optional. If the relation is required — set `nullable: false` explicitly.
 
 **FK constraint is absent.** A polymorphic FK cannot be created at the DB level (an FK references one table, but here there are several). Cycle **does not create an FK** for a morphed relation — there's only the `innerKey` column + an index. These attributes don't have an `fkCreate` parameter.
 
-`indexCreate: true` creates a composite index on `[innerKey, morphKey]`, in that order (`schema-builder/src/Relation/Traits/MorphTrait.php:99-114`) — critical for "all Comments of this Article" lookups. A query that filters by `morphKey` alone can't use it.
+`indexCreate: true` creates a composite index on `[innerKey, morphKey]`, in that order — critical for "all Comments of this Article" lookups. A query that filters by `morphKey` alone can't use it.
 
 ### `RefersToMorphed`
 
@@ -644,21 +603,17 @@ class Category
 
 ## Common pitfalls
 
-- **"Relation not found"** — usually an incorrect `target:` (no such role/class in the schema). Verify that the target entity is under `#[Entity]` and reaches the locator.
+- **``Unable to resolve `comment`.`author` relation target (not found or invalid)``** during schema build → `target:` names no entity class or role in the schema. Verify that the target class carries `#[Entity]` and reaches the locator; for morphed relations `target:` must be an interface.
 - **"Field `Entity`.`xxx` does not exists, referenced by …"** during schema build → `innerKey`/`outerKey`/`morphKey` references a name that isn't among the entity's fields. Most common cause: you wrote a **DB column name** instead of a **property name**. If property `$customerId` maps to column `customer_id`, `innerKey` must be `'customerId'`.
 - **FK column is duplicated in STI/JTI**: BelongsTo on the child + the column inherited from the parent → conflict. See `inheritance.md`.
-- **Cycle on insert (cyclic dependency)**: A → BelongsTo B, B → BelongsTo A. Cycle can't figure out the order. Break the cycle: on one of the sides use `RefersTo` (cascade: false), save B after A. For a **morphed** cycle (`BelongsToMorphed` self/A→B→A) the symptom is `Pool has gone into an infinite loop` — break it with `RefersToMorphed`.
+- **`Transaction can't be finished. Some relations can't be resolved:`** on insert → a `BelongsTo` cycle (A → B → A, or an entity referencing itself). Turn one side into `RefersTo`: it inserts the row first and writes the FK with a follow-up UPDATE. For a **morphed** cycle (`BelongsToMorphed` self/A→B→A) the symptom is `Pool has gone into an infinite loop` — break it with `RefersToMorphed`.
 - **`nullable: true` on a relation, but the column is not nullable** → hydration may crash on assigning `null`. Keep them in sync.
 - **CASCADE FK on an MSSQL identity column** → the schema won't compile. Solutions: `fkAction: 'NO ACTION'` or `fkCreate: false`. See `cycle-orm/references/schema-troubleshooting.md`.
-- **Paired `BelongsTo` + `HasMany` both with default `fkCreate: true`** → both try to create an FK on the same column. DBAL deduplicates, but `fkAction`/`fkOnDelete` from the side rendered last wins — behavior becomes traversal-order-dependent. Fix: `fkCreate: false` on one side (typically on `HasOne`/`HasMany`).
-- **`$em->delete($parent)` didn't delete children — they're stuck in the DB (or the transaction fails with an FK violation)** → Cycle doesn't cascade DELETE itself; it relies on the FK's `ON DELETE CASCADE`. Check: `fkCreate: true` + `fkAction: 'CASCADE'` (or `fkOnDelete: 'CASCADE'`). With `fkCreate: false`, either delete children manually or use `fkOnDelete: 'SET NULL'` (+ `nullable: true` on the FK column).
+- **Paired `BelongsTo` + `HasMany` render different `fkAction`s** → the side rendered last wins; set `fkCreate: false` on one side (see `fkCreate: false`).
+- **`$em->delete($parent)` left children in the DB** → Cycle relies on the FK's `ON DELETE CASCADE` (see "Cycle relies on the FK for delete cascading").
 - **`through` entity has no PK** → Cycle can't identify a pivot row. The pivot must be a full-fledged entity.
-- **Eager load on HasMany with large cardinality** → every `select Customer` pulls all its `Order`s via JOIN, hits performance. Use `load: 'lazy'` (default) and pull in the relation in specific queries via `->load('orders')`.
 - **Composite outerKey but scalar innerKey** (or vice versa) → the schema crashes. They must be symmetric.
-- **`Inverse` without `type:`** → schema-build error. The type is always required.
 - **Morph: the `morphKey` column doesn't fit in `morphKeyLength`** (long roles like `billing_invoice_line_item`). Bump `morphKeyLength` to 64-128, don't squeeze.
-- **Morph: composite index on `[innerKey, morphKey]`** — keep `indexCreate: true` (default); it backs every lookup of morphed children.
-- **Morph + FK constraint** — impossible. Cycle doesn't create one; if you try by hand — you'll crash on the first insert.
 - **WHERE on morph columns without both columns** — a query `WHERE commentable_id = 42` without `commentable_role` finds foreign comments (of other entities with the same id). Always query by both columns.
 
 ## Checklist
@@ -667,9 +622,9 @@ class Category
 2. `innerKey`/`outerKey` are either explicitly set, or the defaults match the actual column names.
 3. The FK column exists as `#[Column]` in the corresponding entity with the right type and `nullable`.
 4. `nullable:` on the relation is in sync with `nullable:` on the column and `?T` in the property type.
-5. `cascade:` is decided deliberately: `true` for owned relations, `false` for weak references and cycles.
+5. `cascade:` is decided deliberately: `true` for owned relations, `false` when the related entity is saved elsewhere. Insert cycles are broken with `RefersTo`, not with `cascade`.
 6. `fkCreate`/`fkAction`/`fkOnDelete` suit the driver (especially for MSSQL — see `cycle-orm/references/schema-troubleshooting.md`).
 7. `load:` — `'lazy'` by default; `'eager'` only when the relation is truly always needed.
 8. For ManyToMany — `through:` points to a full-fledged entity with a PK.
 9. If you don't control the mirror side — use `inverse:` to generate the reverse side.
-10. For morphed relations: `morphKeyLength:` is enough for the longest role names; both columns (innerKey + morphKey) are declared; `target:` is a common interface; all "ends" implement it.
+10. For morphed relations: `morphKeyLength:` is enough for the longest role names; both columns (innerKey + morphKey) are declared; `target:` is an interface; every target entity implements it and has the same PK field names.

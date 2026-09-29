@@ -74,7 +74,7 @@ class Order
 }
 ```
 
-— you get `billing_city`, `shipping_city` in `orders`. Without prefixes there would be two `city`s → schema error.
+— you get `billing_city`, `shipping_city` in `orders`. Without prefixes both embeds map to one `city` column. Cycle neither rejects nor warns about this (the same happens with one embeddable used twice — open question upstream, cycle/schema-builder#54): the INSERT writes a single value — the one from the embed declared last — and both properties read it back. Sharing a column is safe only when both embeds always hold the same value; for independent values give each `#[Embedded]` its own `prefix:`.
 
 **Alternative:** the prefix can be set **on the `#[Embedded]` side**:
 
@@ -95,7 +95,7 @@ class Order
 
 — the same `Address` twice, with different prefixes. This is more convenient when a VO is single and used in several entities with different names.
 
-**Don't use both places at once.** Behavior is undefined.
+**Precedence:** `#[Embedded(prefix: ...)]` overrides `#[Embeddable(columnPrefix: ...)]`; `prefix: ''` turns the prefix off for that embed.
 
 ---
 
@@ -112,18 +112,18 @@ public Address $address;
 
 **`load: 'eager'` by default** — the only relation with this default. Eager here means "embedded columns are added to the parent `SELECT`" — the data arrives in the same row.
 
-### `load: 'lazy'` — opt-in loading
+### `load: 'lazy'` — load on first access
 
-`load: 'lazy'` on `#[Embedded]` **does not auto-load the data on property access**:
+`load: 'lazy'` on `#[Embedded]` leaves the embedded columns out of the parent query and fetches them **on first property access**:
 
 1. The parent `SELECT` doesn't include embedded columns:
    ```sql
    SELECT customer.id, customer.name FROM customers AS customer WHERE id = ?
    -- addr_city / addr_street absent
    ```
-2. During entity hydration Cycle **assigns `null` to the embedded property** — there's no separate fetch mechanism for embedded data from the parent table, and without an explicit load there's nothing to assign. For a typed non-nullable property (`public Address $address`), assigning `null` immediately throws `TypeError: Cannot assign null to property ... of type Address`.
+2. With the default proxy `Mapper` the embedded property holds a reference scoped by the owner's PK. The first read of `$customer->address` runs a separate `SELECT` of the embedded columns by that PK and hydrates the object — a typed non-nullable `public Address $address` works too.
 
-3. Load embedded explicitly — one of two ways:
+3. To skip the per-entity query, load embedded up front — one of two ways:
    ```php
    // (a) on Select: ->load('embeddedName')
    $repo->select()->load('address')->wherePK($id)->fetchOne();
@@ -136,15 +136,13 @@ public Address $address;
        ->load('address')
        ->run();
    ```
-   Either path mounts the embedded columns into the query. A plain `$repo->findByPK($id)` without `->load(...)` will throw `TypeError` on first property access.
+   Either path mounts the embedded columns into the query.
 
-**When to pick `'lazy'`:** when the embedded is genuinely not needed in most queries and you want to control its loading explicitly. Otherwise keep the `'eager'` default — the columns are in the same row anyway, no overhead.
+**When to pick `'lazy'`:** when most queries don't need the embedded and an extra query on first access is acceptable. Otherwise keep the `'eager'` default — the columns are in the same row anyway, no overhead.
 
 ---
 
 ## When Embeddable vs JSON-typecast VO
-
-This is a common dilemma. Two scenarios:
 
 | Aspect                          | Embeddable                          | JSON-VO + typecast (`cycle-orm/references/typecasters-advanced.md`) |
 |---------------------------------|-------------------------------------|--------------------------------------------|
@@ -163,8 +161,8 @@ This is a common dilemma. Two scenarios:
 
 ## Embeddable limitations
 
-- **Embeddable can't have its own PK.** It's not an entity with independent identity. PK comes from the owner.
-- **Embeddable can't have relations.** No `#[BelongsTo]`/`#[HasOne]` inside. If needed — it's already an Entity, not an Embeddable.
+- **Embeddable can't have its own PK.** It's not an entity with independent identity. PK comes from the owner: Cycle copies the owner's PK fields into the embeddable.
+- **Embeddable can't have relations.** A relation attribute inside fails with `AnnotationException`: "Relations are not allowed within embeddable entities in `App\Address`". If needed — it's already an Entity, not an Embeddable.
 - **Embeddable properties are hydrated as usual** — `final readonly` is forbidden for the same reasons as for Entity (`define-entity.md`). Use `protected` + getters if external immutability is needed.
 - **A single Embeddable can be used several times in one entity**, but only if prefixes differ — set either on the VO side via `#[Embeddable(columnPrefix: ...)]` or on the owner side via `#[Embedded(prefix: ...)]`.
 - **The Embeddable constructor** is not called on load (the same as for Entity).
@@ -200,20 +198,16 @@ Useful in DDD style when the VO shouldn't have ORM attributes on its properties.
 
 ## Common pitfalls
 
-- **Two Embedded of the same type without `prefix:`** — columns collide, the schema crashes. Use `columnPrefix` in Embeddable or `prefix:` in Embedded.
-- **`final readonly class` on an Embeddable** — forbidden for the same reasons as for Entity (hydration via reflection). If you want an immutable VO — go with a JSON-typecast VO (`cycle-orm/references/typecasters-advanced.md`).
-- **Embeddable with a PK** — no, it's not an entity, it never has its own PK.
-- **`load: 'lazy'` on `#[Embedded]` without an explicit `->load('name')`** — `TypeError: Cannot assign null to property of type X` on first property access. Embedded columns drop out of the root SELECT and there's no auto-load on access. Loading is explicit-only: `->load('name')` on Select, or `BulkLoader` on an already-fetched set.
+- **Embeddable field named like the owner's PK** (e.g. `id`) — compilation fails with `EmbeddedPrimaryKeyException`: "Entity `customer:address:address` has conflicted field `id`." Rename the field.
+- **`load: 'lazy'` on `#[Embedded]` over a list** — every entity runs its own `SELECT` on first access (N+1). Load up front: `->load('name')` on Select, or `BulkLoader` on an already-fetched set.
 - **Changing the Embeddable schema** — migrate the tables of **all** entities it's embedded into. Embeddable has no table of its own to migrate.
-- **Embeddable doesn't appear in `Registry::getEntities()`** — it's on a separate embeddings list. If you search for it as a regular entity — you won't find it.
 - **Hydrating an Embedded when all fields are null** — Cycle hydrates an object with null fields. If all Embeddable fields are nullable and often all null — the embedded object is still created. If you want the embedded to become `null` when all fields are null — that's manual work in the mapper, or a JSON-VO with a fully nullable column.
 
 ## Checklist
 
 1. The class is marked `#[Embeddable]` (not `#[Entity]`).
-2. The class is **not `final`** and properties are **not `readonly`** — the same constraints as for Entity.
-3. If a single entity has several embeds of the same VO — each has its own `prefix:`.
-4. The Embeddable has **no** PK, relations, or inheritance from other entities.
-5. The `load: 'eager'` default is preserved. If `'lazy'` is chosen — load embedded explicitly (`->load('name')` on Select or `BulkLoader`); otherwise property access throws `TypeError`.
-6. The Embeddable vs JSON-VO decision is made deliberately (see the table above).
-7. The migration covers all tables the VO is embedded into.
+2. If a single entity has several embeds of the same VO — each has its own `prefix:`.
+3. The Embeddable has **no** PK, relations, or inheritance from other entities.
+4. The `load: 'eager'` default is preserved. With `'lazy'`, lists load the embedded up front (`->load('name')` on Select or `BulkLoader`) to avoid a query per entity.
+5. The Embeddable vs JSON-VO decision is made deliberately (see the table above).
+6. The migration covers all tables the VO is embedded into.

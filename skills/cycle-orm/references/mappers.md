@@ -2,7 +2,7 @@
 
 Cycle ships **4 mappers** with fundamentally different behavior. The default is `Cycle\ORM\Mapper\Mapper` (proxy via `extends`, bound to a PHP entity class). When it does not fit — you need `final` classes, want to avoid proxy magic, or have schemaless data — pick one of the other three. This page is about **choosing** a mapper; writing your own (extends Mapper + overriding methods) lives in `orm-extensions.md`.
 
-The mapper is stored in the compiled schema under the `SchemaInterface::MAPPER` key (per role) — see `schema.md` for the full schema format and its sources. The default mapper factory can be overridden globally at the ORM factory level. The ways to assign a mapper to a specific entity under different schema-declaration styles live in the corresponding skills (for attributes — `[[cycle-orm-attributes]]`).
+The mapper is stored in the compiled schema under the `SchemaInterface::MAPPER` key (per role) — see `schema.md` for the full schema format and its sources. To change the default for every entity, pass it to the schema compiler: `(new Compiler())->compile($registry, $generators, defaults: [SchemaInterface::MAPPER => PromiseMapper::class])`. `Factory::withDefaultSchemaClasses([SchemaInterface::MAPPER => ...])` covers only roles whose schema has no `MAPPER` key (hand-written array schemas) — a schema compiled by `cycle/schema-builder` always fills that key. The ways to assign a mapper to a specific entity under different schema-declaration styles live in the corresponding skills (for attributes — `[[cycle-orm-attributes]]`).
 
 ## Quick summary
 
@@ -21,27 +21,27 @@ All four extend the abstract `Cycle\ORM\Mapper\DatabaseMapper`, which implements
 
 **How it works:**
 - `init()` creates a proxy class via `ProxyEntityFactory`. The proxy extends your entity class (`class YourEntity Cycle ORM Proxy extends YourEntity`) and adds lazy-load logic for relation properties.
-- `hydrate()` writes data into properties through `ProxyEntityFactory::upgrade()` (reflection under the hood).
+- `hydrate()` writes data into properties through `ProxyEntityFactory::upgrade()` → `ClosureHydrator`: closures bound to the scope of each declaring class, so private and protected properties are written without Reflection.
 - Supports STI via `SingleTableTrait` — on `init()` it inspects the discriminator column and picks the correct child class from `SchemaInterface::CHILDREN`.
 
 **Hard requirements on the entity class:**
-- `final class` — **forbidden** (the proxy cannot `extends`). → ``RuntimeException("The entity `App\User` class is final and can't be extended.")`` on the first load or `make()` (`ProxyEntityFactory.php:153-154`).
-- `readonly` — **forbidden**. The hydrator swallows every write error except `TypeError` (`ClosureHydrator.php:41-47,74-81`): a `public readonly` property stays uninitialized, a `private readonly` one keeps its first value; a `readonly class` is a fatal on proxy generation.
+- `final class` — **forbidden** (the proxy cannot `extends`). → ``RuntimeException("The entity `App\User` class is final and can't be extended.")`` on the first load or `make()`.
+- `readonly` — **forbidden**. `readonly` properties are not supported by this mapper; a `readonly class` is a fatal on proxy generation (the proxy cannot extend it). For immutability from the outside, use `private` properties with getters.
 - The entity constructor is **not invoked** on load from DB — the proxy is created without `new YourEntity()`. No side effects in `__construct`.
 
 **What you observe at runtime:**
 - `$user instanceof User` → `true` (the proxy `extends User`).
 - `$user::class` → the proxy class name, not `User::class`. Direct `get_class($x) === User::class` comparisons will break — use `instanceof` or compare by role (`$orm->getMapper($user)->getRole()`).
-- Access to `$user->orders` (typed `iterable`/`Collection`) is transparent. If the relation has already been loaded (eagerly via `load('orders')` or available in the Heap), the materialized collection is returned; otherwise the proxy issues a `SELECT` on first access.
+- Access to `$user->orders` (typed `iterable`/`Collection`) is transparent: a relation eager-loaded via `load('orders')` is already materialized; otherwise the first access resolves it.
 - **Relation properties are typed with regular types** — `public Collection $orders`, `public ?User $owner`. No union with `ReferenceInterface` needed (unlike `PromiseMapper`): the proxy stores the unresolved reference in a hidden field, and the typed property only ever sees the resolved value.
-- Resolution in `__get` is **always eager** (`resolve(..., true)`): the proxy does not check the Heap and never returns a `Promise`. This is what makes lazy-load of the default Mapper genuinely "transparent" — and also why **N+1 on iteration without `load()` is just as transparent**.
-- **`new YourEntity()` (without `$orm->make()`) is a separate hydration path.** On a plain object (not a proxy) the mapper cannot use the hidden `__cycle_orm_rel_data` field and inspects the relation property type: if no type in the union accepts `ReferenceInterface` (the typical case — `public Post $post`), the mapper has to **eager-resolve** the relation with a real SELECT during the first hydration. Full case with reproduction and three workarounds (`$orm->make()` / union with `ReferenceInterface` / `PromiseMapper`) — `entity-lifecycle.md`.
+- `__get` resolves the stored reference with `load: true` and never returns a `Promise`. A to-one target already in the Heap is returned without a query; a to-one target outside the Heap and every to-many relation cost a `SELECT` on first access. Lazy-load is transparent — and so is **N+1 when iterating without `load()`**.
+- **`new YourEntity()` (instead of `$orm->make()`) takes a separate hydration path** that can fire an extra `SELECT` on persist — see `entity-lifecycle.md`.
 
 ---
 
 ## 2. `Cycle\ORM\PromiseMapper\PromiseMapper` — no proxy, Promise-based
 
-**Package:** `cycle/orm-promise-mapper` (separate, install with `composer require cycle/orm-promise-mapper`). See `repos.md` for the current version.
+**Package:** `cycle/orm-promise-mapper` (separate, install with `composer require cycle/orm-promise-mapper`).
 
 **How it works:**
 - `init()` instantiates your class through `Doctrine\Instantiator\Instantiator` — **bypasses the constructor**, but produces a real instance of your class (no `extends`-proxy).
@@ -52,9 +52,9 @@ All four extend the abstract `Cycle\ORM\Mapper\DatabaseMapper`, which implements
 - `final class` — **allowed** (no `extends`-proxy).
 - `$user::class === User::class` — **true**.
 - **Relations are NOT transparent.** If not eager-loaded via `load()`, `$user->orders` holds a `Promise` object. `foreach ($user->orders)` will fail — `Promise` does not implement `Traversable`. You need either `$user->orders->fetch()` or eager-load.
-- **Lazy relation properties must be typed as a union with `ReferenceInterface`** — otherwise PHP's typed-property check throws `TypeError` during hydration. There is **no** automatic eager-resolve fallback when the property type cannot hold a `Promise` (unlike the ClosureHydrator path in `cycle/orm`, which is used on default-Mapper proxies and not engaged here).
+- **Lazy relation properties must be typed as a union with `ReferenceInterface`** — otherwise PHP's typed-property check throws `TypeError` during hydration. There is **no** automatic eager-resolve fallback when the property type cannot hold a `Promise` (the default Mapper has one, and only for non-proxy objects — bare `new Entity()`; PromiseMapper hydrates through Laminas instead).
 - The constructor is still not invoked (Instantiator bypasses it).
-- `readonly` is still not allowed: the hydrator writes via reflection.
+- `readonly` properties are initialized on load and on `make()` — the first write goes through Reflection. Any second write by the mapper to an initialized `readonly` property throws `Error: Cannot modify readonly property App\User::$name` — e.g. when the post-persist sync writes a changed column value back.
 
 **Correct typing of relation properties** (from the official `cycle/orm-promise-mapper` README):
 
@@ -121,21 +121,10 @@ Without `ReferenceInterface` in the union for a lazy relation, the first hydrati
 
 ## Pitfalls
 
-- **`final class` + default Mapper** → `RuntimeException` on the first load or `make()`. Either drop `final` or switch to `PromiseMapper`.
-- **Default Mapper + `new YourEntity()` + typed relation property without `?`/union** → an extra `SELECT` during persist (the mapper is forced to eager-resolve because it cannot place a `Reference` into a typed property). Workarounds — `$orm->make()`, a union with `ReferenceInterface`, or `PromiseMapper`. Full case — `entity-lifecycle.md`.
-- **`readonly` properties** → under the default `Mapper` the hydrator silently skips the writes (see above). External immutability — `protected`/`private` + getters.
-- **PromiseMapper and `foreach ($entity->relation)`** — without `load('relation')`, the slot holds a `Promise`, not a collection. Fails on `Traversable`. Either `->fetch()` or eager-load.
-- **PromiseMapper + typed property without `ReferenceInterface`** — `TypeError` at hydration. Lazy-relation properties must be `ReferenceInterface|TargetType`. There is no automatic eager-query fallback.
-- **StdMapper + STI** — does not work in principle. If you need a hierarchy, take `Mapper`.
-- **`get_class($entity) === Domain\User::class`** for the default Mapper is always `false` (proxy class). Use `instanceof` or the role via `$orm->getMapper($entity)->getRole()`.
-- **The constructor is not invoked by any of the four.** If `__construct` was doing default initialization or validation — move it to a factory (see `entity-lifecycle.md`).
-- **Swapping the mapper at runtime** — does not work. The mapper is cached in the ORM on first access to the role; change it only at bootstrap.
+- **Defaults or validation in `__construct` never run on loaded entities** → `Mapper` and `PromiseMapper` instantiate the class without calling the constructor → move the initialization into a factory around `$orm->make()` (see `entity-lifecycle.md`).
+- **A mapper changed after bootstrap has no effect** → the ORM caches the mapper instance on first access to the role → set the mapper in the schema before the ORM serves its first request.
 
 ## Selection checklist
 
-1. Default — `Mapper`. Do not change until you have a concrete pain.
-2. `PromiseMapper` — when `final` is required or proxies get in the way (debug/static analysis). Do not forget `composer require cycle/orm-promise-mapper`.
-3. `StdMapper` — when there is no PHP class and you do not want one. STI drops out.
-4. `ClasslessMapper` — schemaless + transparent relations required.
-5. Assign the mapper to an entity through the schema (the `SchemaInterface::MAPPER` key per role) or, under attribute-driven declaration, via `[[cycle-orm-attributes]]`.
-6. Custom mapper (extends existing, overriding `init`/`hydrate`/`queue*`) — `orm-extensions.md`.
+1. The mapper is set per entity: `#[Entity(mapper: PromiseMapper::class)]` with attributes (see [[cycle-orm-attributes]]), or the `SchemaInterface::MAPPER` key in a hand-written schema.
+2. Custom mapper (extends existing, overriding `init`/`hydrate`/`queue*`) — `orm-extensions.md`.

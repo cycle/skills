@@ -62,7 +62,7 @@ class Cat extends Animal
 
 ### Discriminator
 
-`#[DiscriminatorColumn(name: 'type')]` — the only parameter, the column name. The column itself is declared as a regular `#[Column(type: 'string')]` on the parent. Cycle doesn't create it itself — **you** declare it, and it's then used as the discriminator.
+`#[DiscriminatorColumn(name: 'type')]` — the only parameter: the **field** (property) name of the discriminator, not its DB column name. Declare that field yourself as a regular `#[Column(type: 'string')]` on the parent; Cycle uses it as the discriminator and doesn't create it.
 
 ### Discriminator value on the child
 
@@ -98,7 +98,7 @@ class Cat extends Animal
 
 ### Where relations live in STI
 
-In STI **relations are inherited** automatically. If `#[BelongsTo(target: Shelter::class)]` is declared on Animal, Cat and Dog get it too. This is natural: one table — one set of columns — one set of relations.
+In STI **relations are inherited** automatically. If `#[BelongsTo(target: Shelter::class)]` is declared on Animal, Cat and Dog get it too.
 
 You can add **own** relations on a child. They also land in the shared table.
 
@@ -145,16 +145,14 @@ class Manager extends Employee
 
 ```php
 #[JoinedTable(
-    outerKey: 'email',           // name of the parent field the FK references; default = parent primary field
+    outerKey: 'legacyId',        // parent field the FK references (same type as the PK); default = parent primary field
     fkCreate: true,              // whether to create the FK constraint; default true
     fkAction: 'CASCADE',         // ON DELETE / ON UPDATE; default 'CASCADE'
 )]
 class Employee extends User { /* ... */ }
 ```
 
-**`outerKey`** — a **field name** on the parent, not a DB column name. Almost never needed; the default (the parent's primary field) is what you want. Useful only when linking by a non-standard unique field.
-
-> **Terminology note.** Thanks to `outerKey`, Cycle covers not just classic JTI (the JPA `JOINED` flavor where `child.id = parent.id`, one shared identity) but also the more general **Class Table Inheritance** (Fowler): the link goes from the child's own PK to **any unique field** on the parent — email, UUID, business key. The child side is always tied to the child's PK, but the parent side is free via `outerKey`. JPA doesn't call this out as a separate strategy.
+**`outerKey`** — a **field name** on the parent, not a DB column name. The default (the parent's primary field) fits almost always. `outerKey` may point at any unique parent field (a legacy id, a business key) whose type matches the PK: the child's PK stores that field's value, so an int PK can't reference a string `email`. Along with the FK, Cycle adds a UNIQUE index on the parent's `outerKey` columns itself.
 
 **`fkCreate: false`** — disables the FK constraint. Cycle still knows about the relationship, the schema just has no FOREIGN KEY. Useful for cross-DB hierarchies or drivers where FK with CASCADE doesn't work (MSSQL identity columns).
 
@@ -213,15 +211,17 @@ Behavior: the `shelter` relation **belongs to the class using the trait** (via `
 
 ---
 
-## Disabling child-class loading at the Select level
+## Disabling child-class loading at the Select level (JTI)
 
-For STI/JTI, Select has a **`loadSubclasses(bool)`** method — controls whether child-class fields are read in the main query:
+For JTI, Select has a **`loadSubclasses(bool)`** method — controls whether child tables are joined into the query:
 
 ```php
-$repo->select()->loadSubclasses(false);   // parent fields only, no JOIN / discriminator branches
+$repo->select()->loadSubclasses(false);   // parent table only, no JOINs to child tables
 ```
 
-The default is `true` — Cycle pulls in the discriminator and fields of all children. `false` makes sense when you deliberately work with parent fields only (lists, aggregations) and want to save on the JOIN/SELECT. Hydration then yields an instance of the parent class — `instanceof` of a child returns false.
+The default is `true` — Cycle joins every child table and hydrates each row into its concrete class. With `false` every row hydrates as the parent class (`instanceof Employee` is false, child fields stay unset); use it for lists and aggregations over parent fields.
+
+Under STI the flag leaves the class unchanged: the discriminator lives in the shared table, so rows still hydrate into their child classes.
 
 Details and pitfalls — `cycle-orm/references/fetching.md` (`loadSubclasses()`).
 
@@ -245,7 +245,7 @@ Levels **can be mixed**: the same class can be an STI child at one level and a J
 
 ## Child without `#[SingleTable]`/`#[JoinedTable]` (Concrete Table Inheritance)
 
-Conceptually close to **Concrete Table Inheritance** (Fowler) / **Table Per Class** (JPA, Doctrine `TABLE_PER_CLASS`) / **Table Per Concrete Class** (Hibernate): each concrete class has its own table containing all fields, inherited ones included. In Cycle this isn't a separate strategy — the behavior "falls out" of a class being marked `#[Entity]` but **not** having `#[SingleTable]`/`#[JoinedTable]`, while still extending another entity in PHP.
+In Cycle this isn't a separate strategy: a class marked `#[Entity]` **without** `#[SingleTable]`/`#[JoinedTable]` that extends another entity in PHP gets its own table containing all fields, inherited ones included.
 
 The scenario:
 
@@ -289,34 +289,29 @@ Beaver is a **standalone** entity with its own table `beavers`. It inherits PHP 
 - Normalization is important (no N nullable columns "for other types").
 - You want FK constraints on specific fields without NULL issues.
 
-**Mixing STI and JTI across levels** of the same hierarchy is allowed by Cycle (see "Multi-level inheritance"), but isn't worth it without a clear reason — schema and migration complexity grows fast.
-
-**Don't create a hierarchy just "because OOP says so".** If a single class with an `enum` field `type` is enough for animals — skip inheritance entirely. It simplifies migrations.
+**Prefer a single class with an enum `type` column when subtypes share behaviour.** It keeps migrations simple.
 
 ---
 
 ## Common pitfalls
 
 - **STI: a non-nullable column in one of the children** → INSERT of other children crashes. Make it `nullable: true` or set a `default:` for child-specific columns.
-- **JTI: a child declares a column with the same name as the parent** → conflict. Don't override, or rename.
-- **Discriminator not declared in the parent via `#[Column]`** — forgotten. `#[DiscriminatorColumn(name: 'type')]` specifies the name, but the column with that name has to be declared separately.
-- **`#[SingleTable]` on a class whose parent isn't `#[Entity]`** → error. The parent must be a full-fledged entity.
+- **JTI: a child redeclares a parent property with `#[Column]`** → don't: parent columns belong to the parent table (see "Which columns live in the child table"). Declare each column on one level only.
+- **Discriminator field missing or misnamed** → compilation throws `WrongDiscriminatorColumnException`: "Discriminator column `type` is not found among fields of the `animal` role." `name:` must match a parent **field** declared via `#[Column]`, not its DB column name. With no `#[DiscriminatorColumn]` on the root: `DiscriminatorColumnNotPresentException` ("Discriminator column for the `animal` role should be defined.").
+- **`#[SingleTable]`/`#[JoinedTable]` on a class whose PHP parent isn't an `#[Entity]`** → no error: the attribute is silently ignored and the class becomes a standalone entity with its own table. Mark the parent `#[Entity]`.
 - **Changing STI/JTI after release in prod** — data migration is non-trivial (STI → JTI requires redistributing columns across new tables). Think upfront.
-- **Multi-level + cyclic FK** in JTI — Cycle does several SQLs on insert: parent first, then child. If there's a cycle through relations — it may crash. Decompose.
 - **STI child has its own `#[DiscriminatorColumn]`** — no, the discriminator is always on the root parent.
-- **JTI child with `table:` different from the parent** — fine, this is the **point** of JTI. Don't confuse with STI.
-- **`outerKey:` in `#[JoinedTable]` references a non-existent parent column** → `WrongParentKeyColumnException`. Check the name.
+- **`outerKey:` in `#[JoinedTable]` names a field the parent doesn't have** → `WrongParentKeyColumnException`: "Outer key column `%s` is not found among fields of the `%s` role."
 
 ## Checklist
 
-1. For each hierarchy the approach is chosen deliberately: STI, JTI, or (rarely) a per-level mix. Without a clear reason, don't combine them.
+1. Pick one approach per hierarchy.
 2. **STI:**
-   - The root parent has `#[DiscriminatorColumn(name: '...')]` + a matching `#[Column]`.
+   - The root parent has `#[DiscriminatorColumn(name: '...')]` naming a field declared with `#[Column]`.
    - Each child has `#[SingleTable]` (optionally with `value:`).
    - Child-specific columns are `nullable` or have a `default`.
 3. **JTI:**
    - Each child has `#[JoinedTable]`.
    - The FK constraint works on the target driver (for MSSQL see `cycle-orm/references/schema-troubleshooting.md`).
-4. Multi-level (if needed): each level correctly extends the previous one; `markAsChildOfSingleTableInheritance` / FK chains work.
+4. Each JTI level's FK references its direct parent.
 5. Entities that extend an STI/JTI parent without their own `#[SingleTable]`/`#[JoinedTable]` (Concrete Table style) behave as regular entities — they are **not** a child in Cycle's inheritance sense.
-6. Trait relations correctly "land" in the declaring class via `getDeclaringClass()` — verified by a test that they aren't duplicated in JTI children.

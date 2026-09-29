@@ -18,7 +18,7 @@ composer require cycle/entity-behavior-uuid   # separately, only if a UUID gener
 
 **The attributes don't work on their own** — two integrations are needed:
 
-1. **Schema-builder**: the attribute parser as a modifier. In `cycle/annotated` this is enabled by default — the `Embeddings/Entities` generator constructor picks up subclasses of `\Cycle\ORM\Entity\Behavior\Schema\BaseModifier`. If you have a custom pipeline through `\Cycle\Schema\Compiler::compile()` — make sure the `Generator`s `Entities`/`Embeddings` from `cycle/annotated` are part of the pass.
+1. **Schema-builder**: the `Entities` generator of `cycle/annotated` collects behavior attributes (`SchemaModifierInterface` implementations) from entity classes only — `Embeddings` doesn't read them, so a behavior on an `#[Embeddable]` is silently ignored. The `\Cycle\Schema\Compiler` pipeline must include `Generator\GenerateModifiers` and `Generator\RenderModifiers` from `cycle/schema-builder` — they apply the collected behaviors to the schema.
 2. **Runtime**: `\Cycle\ORM\Entity\Behavior\EventDrivenCommandGenerator` must be passed into `\Cycle\ORM\ORM` instead of the standard `CommandGenerator`. Without it Mapper events aren't dispatched, and attributes are silently ignored.
 
 ```php
@@ -32,13 +32,11 @@ $orm = new ORM(
 );
 ```
 
-**Pitfall:** if behaviors "don't fire", in 90% of cases you forgot to wire `EventDrivenCommandGenerator`. Attributes in code are only the declaration; without the runner they're dead.
-
 ---
 
 ## Built-in behaviours: timestamps, soft-delete, optimistic lock
 
-> **About field naming in the examples below.** Package defaults are `field: 'createdAt'` / `'updatedAt'` / `'deletedAt'`. Column resolution (`entity-behavior/src/Schema/RegistryModifier.php:270-277`): explicit `column:` → else the column of an existing `#[Column]` property with that field name (snake_case via `cycle/annotated`, e.g. `created_at`) → else the **field name verbatim** (`createdAt`). So without `column:` and without a declared property, the column is camelCase. The examples below **override** `field:`/`column:` to AIP-compatible `createTime`/`create_time` etc. (Google AIP: timestamp fields are `*Time`/`*_time`). Without `field:`/`column:` the package defaults kick in — if you want AIP, the override is required.
+> **About field naming in the examples below.** Package defaults are `field: 'createdAt'` / `'updatedAt'` / `'deletedAt'`. Column resolution (`RegistryModifier::findColumnName()`): explicit `column:` → else the column of an existing `#[Column]` property with that field name (snake_case via `cycle/annotated`, e.g. `created_at`) → else the **field name verbatim** (`createdAt`). So without `column:` and without a declared property, the column is camelCase. The examples below **override** `field:`/`column:` to AIP-compatible `createTime`/`create_time` etc. (Google AIP: timestamp fields are `*Time`/`*_time`). Without `field:`/`column:` the package defaults kick in — if you want AIP, the override is required.
 
 ### `#[CreatedAt]` — creation date
 
@@ -132,7 +130,7 @@ class Document
 }
 ```
 
-On UPDATE the behaviour adds `version = $oldVersion` to the WHERE. If a concurrent process has already incremented the version — the UPDATE touches 0 rows and Cycle throws `ChangedVersionException`.
+On UPDATE and DELETE the behaviour adds `version = <loaded value>` to the WHERE. If a concurrent process has already changed the version, the query touches 0 rows and Cycle throws `RecordIsLockedException`: "The `document` record is locked." If the in-memory `$version` differs from the loaded value, `ChangedVersionException` ("Record version change detected. Old value `1`, a new value `42`.") is thrown before the query runs.
 
 Available `rule:` values:
 
@@ -142,9 +140,8 @@ Available `rule:` values:
 | `RULE_MICROTIME`             | VARCHAR(32)  | `microtime(true)` as a string                         |
 | `RULE_RAND_STR`              | VARCHAR(32)  | random string                                         |
 | `RULE_DATETIME`              | DATETIME     | `now()`                                               |
-| `RULE_MANUAL`                | —            | you set `$version` by hand, the behaviour only checks |
 
-If `rule:` is not set, it's inferred from the type of the existing property: `int` → INCREMENT, `string` → MICROTIME, `DateTime*` → DATETIME. If there's no field — `BehaviorCompilationException` ("Wrong rule ...").
+If `rule:` is not set, it's inferred from the column type of an existing `#[Column]` field: integer types → INCREMENT, `string` → MICROTIME, `datetime` → DATETIME; any other type → `BehaviorCompilationException`: "Failed to compute rule based on column type." Without such a field the rule is INCREMENT.
 
 **Pitfall:** `OptimisticLock` wraps the command in a `WrappedCommand` — sometimes conflicts with a custom Mapper that overrides `queueUpdate`. If your Mapper doesn't call `parent::queueUpdate`, the version won't update.
 
@@ -174,7 +171,7 @@ public ?CommandInterface $command;       // command to be executed; the listener
 
 A listener can:
 - Read/modify `$event->entity`.
-- Append data to `$event->state->register('column', $value)` — lands in the final INSERT/UPDATE.
+- Append data to `$event->state->register('field', $value)` — lands in the final INSERT/UPDATE.
 - Replace `$event->command` with a different command (this is what `SoftDelete` does).
 - Returns nothing — modifications go through changes to the event state.
 
@@ -219,9 +216,9 @@ class User
 - **`callable`** — a PHP callable, typically `[ClassName::class, 'staticMethodName']`. The method **must be `static`** (Cycle invokes it as a class-method, no instance).
 - **`events`** — `class-string<MapperEvent>` or an array of class-strings.
 
-`#[Hook]` is **not repeatable**, but you can attach several different `#[Hook]`s on a class — each with its own callable. If you want a single callable for multiple events — pass an array to `events:`.
+Several `#[Hook]`s on one class all fire. If you want a single callable for multiple events — pass an array to `events:`.
 
-**Pitfall:** closures don't work in `callable` (they don't serialize to the schema). Only a static class-method or a global function name.
+**Pitfall:** closures don't work in `callable`: attribute arguments must be constant expressions, so PHP 8.4 rejects a closure at compile time ("Constant expression contains invalid operations"). Only a static class-method or a global function name.
 
 ---
 
@@ -264,9 +261,9 @@ final class UserAuditor
 
 - **`#[Listen]` is repeatable** on a single method — multiple events via multiple attributes.
 - **DI works**: the listener's constructor is resolved through the container you passed to `EventDrivenCommandGenerator(..., $container)`. Parameters from `args` are mixed in as kwargs.
-- **`#[EventListener]` is repeatable** — you can attach several different listener classes to one entity.
+- **Several `#[EventListener]`s** on one entity all fire.
 
-**Pitfall:** `EventListener` does NOT create columns in the schema (unlike CreatedAt/UpdatedAt/etc.). If the listener writes to `$event->state->register('audit_column', ...)` and the column isn't in the schema — the SQL query crashes. Declare the column separately via `#[Column]`.
+**Pitfall:** `EventListener` does NOT create columns in the schema (unlike CreatedAt/UpdatedAt/etc.). If the listener writes to `$event->state->register('auditField', ...)` and the field isn't in the schema — the SQL query crashes. Declare the column separately via `#[Column]`.
 
 ---
 
@@ -290,7 +287,7 @@ class Order
 
 What it does:
 1. Adds to the schema a `uuid` column of type UUID (via `addUuidColumn`), `BEFORE_INSERT`-generated.
-2. Registers the typecast `[\Ramsey\Uuid\Uuid::class, 'fromString']` for the field — the hydrator immediately gives back a `UuidInterface` object, not a string.
+2. Registers the typecast `[\Ramsey\Uuid\Uuid::class, 'fromString']` for the field — the hydrator immediately gives back a `UuidInterface` object, not a string. A field that already has a typecast keeps it, so a manual `typecast:` on `#[Column]` is redundant.
 3. On `OnCreate`, generates a UUID of the required version via `\Ramsey\Uuid\Uuid::uuid7()` (or the corresponding method).
 
 Available variants — by UUID version:
@@ -307,9 +304,7 @@ Available variants — by UUID version:
 
 **All `Uuid*` attributes are repeatable** (`IS_REPEATABLE`) — theoretically you can attach several with different `field:`, but typically one per entity.
 
-**`nullable: true`** — skips auto-generation if the value is already set (for data imports where the UUID comes from outside).
-
-**Pitfall:** the typecast is registered by the behaviour automatically. **Don't duplicate** `typecast: [Uuid::class, 'fromString']` in `#[Column]` by hand — it'll be a double cast and/or an error ("unknown rule" if out of sync).
+**`nullable: true`** — the column becomes nullable and the behaviour generates nothing: set the UUID yourself or leave it `null`. A value already set before persist is kept in either mode.
 
 ---
 
@@ -327,25 +322,18 @@ This is a rare need — usually `Hook` or `EventListener` covers everything.
 ## Common pitfalls
 
 - **Attributes silently ignored** — forgot to wire `EventDrivenCommandGenerator` into `ORM::__construct(commandGenerator: ...)`. The most common stumble.
-- **`#[Hook]` callable is not `static`** — crashes with "Cannot call non-static method statically". Make the methods `static`.
-- **`#[Hook]` callable is a closure** — not allowed, the schema is compiled and references are cached. Only `[Class, 'method']` / `'global_function'`.
-- **`SoftDelete` doesn't filter SELECTs** — add a `Scope` separately. The behaviour only handles "DELETE → UPDATE the delete_time column".
+- **`#[Hook]` callable is not `static`** — schema build fails with `TypeError`: "Cycle\ORM\Entity\Behavior\Hook::__construct(): Argument #1 ($callable) must be of type callable, array given". Make the methods `static`.
+- **`#[Hook]` callable is a closure** — a compile error: attribute arguments must be constant expressions. Only `[Class, 'method']` / `'global_function'`.
 - **`SoftDelete` doesn't fire `OnUpdate`** — listeners on update don't see the soft-delete. If you need an audit of soft-delete — listen to `OnDelete` (it's dispatched on logical delete too).
 - **`OptimisticLock` + custom Mapper without `parent::queueUpdate()`** — the version won't update, the lock breaks.
-- **`Uuid*` + manual `typecast`** — double cast / unknown rule. The behaviour sets the typecast itself.
-- **Behaviour columns + a manual `#[Column]` with a different type** — `BehaviorCompilationException` ("field is not of the correct type"). Either trust the behaviour to create the column, or describe it with an exactly compatible type.
+- **Behaviour columns + a manual `#[Column]` with a different type** — `BehaviorCompilationException`: "Field createTime must be of type datetime." (likewise `integer`, `string`, `uuid`). Either trust the behaviour to create the column, or describe it with an exactly compatible type.
 - **`#[EventListener]` writes to a state column that's not in the schema** — runtime SQL error. The listener doesn't create columns; use Hook + declare the column, or write your own `BaseModifier` attribute.
-- **Hook on the parent entity of STI/JTI** (`inheritance.md`) — inherited by children (a class attribute is visible via reflection). Sometimes that's what you want, sometimes not — keep this in mind.
 
 ## Checklist
 
 1. `composer require cycle/entity-behavior` (+ `cycle/entity-behavior-uuid` if you need UUID).
-2. `EventDrivenCommandGenerator` is passed in the bootstrap to `ORM::__construct` — without it the attributes are dead.
-3. The correct attribute is chosen for timestamps: `#[CreatedAt]` (create only), `#[UpdatedAt]` (create+update), `#[SoftDelete]` (DELETE → UPDATE).
-4. For soft-delete, a `Scope` is registered next to `#[SoftDelete]`, hiding deleted records.
-5. `#[OptimisticLock]` — `rule:` is chosen to fit the business (incrementing int for counters, microtime/random for strings, datetime if you want both timestamp and lock).
-6. `#[Hook]` callable — a `static` method; a closure won't work.
-7. The `#[EventListener]` listener class is resolved through the container (DI works); `args:` are mixed into the constructor.
-8. For UUID-PK `#[Uuid7]` is chosen (unless there's a specific reason for another). The field type is `\Ramsey\Uuid\UuidInterface`. The typecast is **not** registered manually.
-9. If the behaviour conflicts with a custom `Mapper` — the Mapper calls `parent::queueCreate/Update/Delete`.
-10. Not mixed up: "attribute on the class" (CreatedAt/Hook/Uuid7) vs "attribute on a method" (`Listen` — only inside a listener class declared via `EventListener`).
+2. For soft-delete, a `Scope` is registered next to `#[SoftDelete]`, hiding deleted records.
+3. `#[OptimisticLock]` — `rule:` is chosen to fit the business (incrementing int for counters, microtime/random for strings, datetime if you want both timestamp and lock).
+4. `#[Hook]` callable — a `static` method; a closure won't work.
+5. The `#[EventListener]` listener class is resolved through the container (DI works); `args:` are mixed into the constructor.
+6. For UUID-PK `#[Uuid7]` is chosen (unless there's a specific reason for another). The field type is `\Ramsey\Uuid\UuidInterface`.

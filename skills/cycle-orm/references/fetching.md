@@ -1,9 +1,7 @@
 # Fetching: loading entities together with their relations
 
-A deep dive into relation loading strategies and the surrounding infrastructure. It opens with a short "just fetch an entity" entry point (via the repository and via Select), then gets to the core topic: **how to fetch a set of entities together with their relations** without an N+1. The full Select API (`where`/`limit`/`orderBy`/EntityManager/pagination/`forUpdate`, repository builder methods) lives in `repositories.md`. Writing custom Repository/Scope/Mapper classes lives in `orm-extensions.md`.
-
 See also:
-- `repositories.md` — Select WHERE/HAVING/JSON, EntityManager, pagination
+- `repositories.md` — fetching without relations (`findByPK`/`findOne`/`findAll`) and the full Select API: WHERE/HAVING/JSON, ORDER BY/LIMIT, pagination, `forUpdate`, EntityManager
 - `orm-extensions.md` — implementing custom `ScopeInterface`, `RepositoryInterface`
 - `cycle-orm-attributes/references/relations.md` — declaring relations and the `load:` parameter on the attribute itself
 
@@ -16,33 +14,11 @@ Reference sources:
 
 ---
 
-## Just fetch an entity
-
-No relations involved — two standard paths. This is the entry point; the full Select API (every WHERE/HAVING/JSON form, ORDER BY/LIMIT, aggregations, pagination, `forUpdate`, repository builder methods) lives in `repositories.md`.
+## Minimum working example
 
 ```php
 $repo = $orm->getRepository(User::class);
 
-// 1. Via the repository — simple equality lookups
-$user  = $repo->findByPK(42);
-$user  = $repo->findOne(['email' => 'alice@example.com']);
-$users = $repo->findAll(['active' => true], ['create_time' => 'DESC']);
-
-// 2. Beyond a plain `column = value` — via Select
-$users = $repo->select()
-    ->where('active', true)
-    ->orderBy('create_time', 'DESC')
-    ->limit(10)
-    ->fetchAll();
-```
-
-→ The full set of conditions and custom query/builder methods on the repository — see `repositories.md`. Below: how to fetch entities **together with their relations**.
-
----
-
-## Minimum working example: with relations
-
-```php
 // 1. Loading relations via Select
 $users = $repo->select()
     ->load('orders')                     // POSTLOAD: separate SELECT for orders
@@ -70,8 +46,6 @@ Three tools, three scenarios:
 ---
 
 ## `load()` vs `with()`: choosing the right tool
-
-These are **two different tools**, not interchangeable. Hold the model in mind before reading the table:
 
 - **`with()`** — adds a JOIN **only** for WHERE/ORDER BY against the related table. The related data is **not** placed into the entity (no hydration).
 - **`load()`** — places the related data **into** the entity (`$user->orders` returns it with no DB hit). How it loads: a separate `SELECT` (POSTLOAD — the default for HasMany/ManyToMany/BelongsTo) or a JOIN inlined into the main query (INLOAD — the default for HasOne).
@@ -105,7 +79,9 @@ By default `with()` does an INNER JOIN (drops entities with no related rows). To
 ```php
 use Cycle\ORM\Select\Options\JoinMethod;
 
-$repo->select()->with('orders', ['method' => JoinMethod::LeftJoin]);
+// ->value is required: with() takes the raw array and compares 'method' against int constants,
+// so the enum object itself silently falls back to INNER JOIN.
+$repo->select()->with('orders', ['method' => JoinMethod::LeftJoin->value]);
 ```
 
 ### Pagination + HasMany
@@ -113,8 +89,8 @@ $repo->select()->with('orders', ['method' => JoinMethod::LeftJoin]);
 You **can't** load a HasMany via a single JOIN query under a parent `limit()`: `load('orders', new HasManyLoadOptions(method: LoadMethod::SingleQuery))` with a limit throws `LoaderException: Unable to load data using join with limit on parent query`. Cycle doesn't mis-paginate — it forbids the combination outright.
 
 - **You need the relation data** → `load('orders')` without a `method:` — POSTLOAD as a separate query. The root runs with `LIMIT N`, the relation is a separate `SELECT ... WHERE parent_id IN (...)`. The limit is exact, the parent set doesn't blow up.
-- **You only need to filter by the relation, in one query** → `with('orders')`. This is a raw INNER JOIN (plain SQL semantics): a user with 3 orders becomes 3 rows. `LIMIT N` cuts join-rows, and hydration deduplicates them by PK — so without `distinct()` you get **fewer** than N entities (with 3 orders each, `limit(2)` returns 1 user). Fix it with `with('orders')->distinct()->limit(N)` — `DISTINCT` collapses the duplicate parent rows before the limit applies.
-- **Counting** → `count()` with **no argument** → `COUNT(DISTINCT pk)`, correct under a JOIN. **Not** `count('user.id')`: that's `COUNT(user.id)` over join-rows (returns the order count, not the user count), and `distinct()` has no effect on the aggregate.
+- **You only need to filter by the relation, in one query** → `with('orders')`. This is a raw INNER JOIN (plain SQL semantics): a user with 3 orders becomes 3 rows. `LIMIT N` cuts join-rows, and hydration deduplicates them by PK — so without deduplication you get **fewer** than N entities (with 3 orders each, `limit(2)` returns 1 user). Two fixes: `with('orders')->distinct()->limit(N)` — `DISTINCT` collapses the duplicate parent rows before the limit applies; or enable `Options::withGroupByToDeduplicate(true)` on the ORM — then `Select` adds `GROUP BY <root columns>` whenever it has `with()` joins and `limit > 1` or an `offset` (see `installation.md`, "Runtime options"). Loaders added by `load()` never trigger this `GROUP BY`.
+- **Counting** → `count()` with **no argument** → `COUNT(DISTINCT pk)`, correct under a JOIN. **Not** `count('user.id')`: that's `COUNT(user.id)` over join-rows (returns the order count, not the user count), and `distinct()` has no effect on the aggregate. With a **composite PK**, `count()` emits `COUNT(*)` instead of `COUNT(DISTINCT …)` — under a `with()` JOIN it counts join-rows too.
 
 ---
 
@@ -130,7 +106,7 @@ LoadOptions                          ← base (scope/minify/table)
  │   ├─ HasOneLoadOptions            ← +where/orderBy
  │   ├─ HasManyLoadOptions           ← +where/orderBy
  │   ├─ BelongsToLoadOptions         ← +where
- │   ├─ ManyToManyLoadOptions        ← +where/orderBy/throughWhere/throughOrderBy
+ │   ├─ ManyToManyLoadOptions        ← +where/orderBy/pivot
  │   ├─ MorphedHasOneLoadOptions     ← +where/orderBy
  │   └─ MorphedHasManyLoadOptions    ← +where/orderBy
  └─ BelongsToMorphedLoadOptions      ← direct child of LoadOptions, no own fields (scope/minify/table only): morphed belongsTo isn't joined
@@ -168,7 +144,7 @@ $select->load('comments', new HasManyLoadOptions(
 | `table`    | `?string`                         | Override the table (archives/partitions)                                      |
 | `minify`   | `bool`                            | Minify column aliases in SQL (only disable for debugging)                     |
 
-The old array syntax also works (`load('comments', ['method' => ..., 'where' => [...]])`) — the DTO is a typed wrapper over the same `toArray()`.
+The old array syntax also works (`load('comments', ['method' => ..., 'where' => [...]])`) — the DTO is a typed wrapper over the same `toArray()`. Only the DTO's `toArray()` converts `LoadMethod`/`JoinMethod` to ints; in the array form pass `method` as `->value`.
 
 ### The `@.` placeholder
 
@@ -185,14 +161,21 @@ Unlike Select-level `where()`, where dot-notation `relation.column` works by rel
 
 ### ManyToMany — pivot filters
 
-`ManyToManyLoadOptions` additionally supports `throughWhere`/`throughOrderBy` — conditions on the pivot table. `@.@.` (double prefix) inside them is the pivot-table alias.
+`ManyToManyLoadOptions` has no separate pivot-filter fields: pivot columns go into the same `where:`/`orderBy:` with the double prefix `@.@.column` (pivot-table alias), next to `@.column` for the target table. The `pivot:` field configures the pivot loader itself (`as`, `scope`, `method`, …), not its conditions.
+
+```php
+$select->load('tags', new ManyToManyLoadOptions(
+    where:   ['@.@.deleted_at' => null, '@.status' => 'active'],   // pivot + target
+    orderBy: ['@.@.position' => 'ASC'],
+));
+```
 
 ### `loadSubclasses()` — STI/JTI
 
 For STI/JTI entities (`cycle-orm-attributes/references/inheritance.md`) — control whether to load child-class fields:
 
 ```php
-$repo->select()->loadSubclasses(false);   // parent fields only
+$repo->select()->loadSubclasses(false);   // JTI: parent fields only
 ```
 
 Default is `true` — Cycle will pull the discriminator and all child-class fields.
@@ -290,7 +273,7 @@ $container->bindSingleton(
 );
 ```
 
-Or directly — `new \Cycle\ORM\Relation\BulkLoader($orm)`. The constructor only takes `ORMInterface`.
+Or directly — `new \Cycle\ORM\Relation\BulkLoader($orm)`. The constructor only takes `ORMInterface`. The concrete `BulkLoader` is marked `@internal`: type-hint `BulkLoaderInterface` in your code and name the class only in the container binding.
 
 ### Basic workflow
 
@@ -326,14 +309,14 @@ $bulkLoader
     ->run();
 ```
 
-For ManyToMany sorting by a pivot column, use `throughOrderBy` with the pivot alias `@.@.`:
+For ManyToMany sorting by a pivot column, put the `@.@.` key into `orderBy:`:
 
 ```php
 use Cycle\ORM\Select\Options\ManyToManyLoadOptions;
 
 $bulkLoader
     ->collect(...$users)
-    ->load('tags', new ManyToManyLoadOptions(throughOrderBy: ['@.@.created_at' => 'DESC']))
+    ->load('tags', new ManyToManyLoadOptions(orderBy: ['@.@.created_at' => 'DESC']))
     ->run();
 ```
 
@@ -375,7 +358,8 @@ Entity and relation mapping doesn't change — only the data source. Useful for 
 
 - **`load: 'eager'` in the schema + JOINs everywhere** — `relations.md` already warns about this; for one-off loading prefer `BulkLoader` or an explicit `Select::load()` rather than eager in the attribute.
 - **`Select::with()` only takes an array, no DTO.** Passing `new HasManyLoadOptions(...)` into `with()` — TypeError. DTOs only work in `Select::load()`.
-- **`with('hasMany')` without `distinct()`** — `LIMIT` returns **fewer** than N entities: parent rows multiply via the JOIN and hydration dedups them by PK. Fix: `load()` without `method:` (POSTLOAD) or `with()->distinct()->limit()`. Count via `count()` with no argument (`COUNT(DISTINCT pk)`), **not** `count('user.id')` (that counts join-rows).
+- **`with('hasMany')->limit(N)` returns fewer than N entities** — the JOIN multiplies parent rows before `LIMIT`. Fixes and counting rules — "Pagination + HasMany" above.
+- **`with('orders', ['method' => JoinMethod::LeftJoin])` still emits an INNER JOIN** — `with()` doesn't convert enums. Pass `JoinMethod::LeftJoin->value`.
 - **`load('comments', new HasManyLoadOptions(using: 'comments'))` without a prior `with('comments', ['as' => 'comments'])`** — alias doesn't exist, error. `using:` is only valid when the corresponding JOIN has already been made via `with()`.
 - **`@.` in LoadOptions confused with the alias from `with('rel', ['as' => 'r'])`** — these are different scopes: `@.` is local to the LoadOptions of a specific `load()` call, while `as:` from `with()` lives in the Select-level `where()/orderBy`. They don't overlap.
 - **`scope: false` in LoadOptions doesn't disable scope on the root** — these are two independent levels. To disable everywhere — `select()->scope(null)` for the root + LoadOptions `scope: false` per load.
@@ -383,15 +367,15 @@ Entity and relation mapping doesn't change — only the data source. Useful for 
 - **`BulkLoader` on `new` entities** — `LogicException: Entity node not found in the heap`. Only persisted entities (with a node in the Heap) qualify.
 - **`BulkLoader` on a mixed set of roles** — `InvalidArgumentException`. Group by role.
 - **`BulkLoader::collect()` returns a clone and the result is dropped** — `$bulkLoader->collect(...$users); $bulkLoader->load(...)` won't work because the return value of `collect()` was discarded. It's immutable: `$loader = $bulkLoader->collect(...)->load(...)`.
-- **`Select::load()` on an already-loaded relation** — Cycle reloads it, snapshot is overwritten. If you want idempotency — check state, or use `BulkLoader` (which doesn't overwrite already-resolved relations).
+- **A second `Select::load()` doesn't refresh an already-loaded relation** — when the entity is already in the Heap, the fetch returns the same object and fills only relations that are unset or still unresolved references; a resolved relation keeps its in-memory value, even a locally modified one. To re-read from the DB, fetch it after `$orm->getHeap()->clean()` (or detach that entity from the Heap).
 - **`loadSubclasses(false)` behaves differently for JTI vs STI.** Under **JTI** (separate child tables) the flag drops the JOINs to child tables: the entity hydrates as the **parent** class, `instanceof Child` is false, child fields are unset — this is the "parent fields only" case. Under **STI** (single table) the discriminator lives in the shared table and is always read, so the class **still** resolves to the child and the flag has no effect on the instance type. Don't rely on `loadSubclasses(false)` to get a parent instance under STI — it only works for JTI.
 
 ## Checklist
 
 1. Decided which to use: `load()` (data needed), `with()` (filter needed), `BulkLoader` (entities already in hand) — or a combination with `using:`.
-2. For HasMany/ManyToMany pagination — POSTLOAD (`load()` without `method:`) or an explicit `distinct()`/`count(DISTINCT pk)`.
-3. LoadOptions is passed to `load()` via a typed DTO (`HasManyLoadOptions`, etc.); to `with()` — array only.
-4. In LoadOptions `where:`/`orderBy:`, keys start with `@.` (target-table alias); for ManyToMany pivot — `@.@.`.
+2. For HasMany/ManyToMany pagination — POSTLOAD (`load()` without `method:`); with `with()` joins — `distinct()` or `groupByToDeduplicate`; counting via `count()` without an argument.
+3. LoadOptions is passed to `load()` via a typed DTO (`HasManyLoadOptions`, etc.); to `with()` — array only, with `method` as `JoinMethod::…->value`.
+4. In LoadOptions `where:`/`orderBy:`, keys start with `@.` (target-table alias); ManyToMany pivot columns — `@.@.column` in the same `where:`/`orderBy:`.
 5. Entity scope accounted for: applied automatically at the root; to bypass — `scope(null)`; to load-time bypass — `LoadOptions::scope = false / QueryScope`.
 6. When using `BulkLoader`:
    - All entities share the same role.

@@ -45,7 +45,7 @@ public string $email;
 
 ## Column type
 
-`type:` is an ordinary string, not an enum. Cycle passes the value to `cycle/database` (DBAL), which maps it to the SQL type of the specific driver. What's available depends on the driver and its extensions (for example, `vector` appears if pgvector is installed). `ExpectedValues` in `Column.php` is just an IDE/psalm hint, not validation.
+`type:` is an ordinary string, not an enum. Cycle passes the value to `cycle/database` (DBAL), which maps it to the SQL type of the specific driver. What's available depends on the driver and its extensions (for example, `vector` appears if pgvector is installed). The `#[ExpectedValues]` list on `type:` is an IDE/psalm hint, not validation.
 
 ### Types with special ORM semantics
 
@@ -53,9 +53,9 @@ Cycle handles these not as "just an SQL-type mapping" — they have their own be
 
 - **`primary` / `bigPrimary`** — automatically PK + auto-increment. INT/BIGINT respectively.
 - **`smallPrimary`** — same, but SMALLINT *(PostgreSQL only)*.
-- **`uuid` / `ulid` / `snowflake`** — identifiers; hydrated as strings. A `string` property needs nothing more; an object property (UUID value-object) needs an explicit `typecast:`.
-- **`enum`** — requires `values:` (array of strings or backed-enum class); see the enum section.
-- **`json` / `jsonb`** — need an explicit `typecast: 'json'` to get arrays (they aren't inferred); `jsonb` is PG only.
+- **`uuid` / `ulid` / `snowflake`** — identifiers; see "Identifiers".
+- **`enum`** — requires `values:` (array of strings or backed-enum class); see "Enum columns".
+- **`json` / `jsonb`** — no inferred typecast; see "Automatic rules". `jsonb` is PG only.
 - **`decimal`** — inferred as `float` (precision loss); a `string $amount` property then fails hydration with `MapperException`. Use a `float` property or a callable typecast that returns a string.
 
 Everything else is driver-specific names and passthrough to DBAL. If your driver supports them — write them as is:
@@ -71,8 +71,6 @@ public string $ip;                // PostgreSQL
 public array $embedding;          // pgvector (if installed)
 ```
 
-**Cross-driver project pitfall:** if a migration runs across several DBs (`SQLite` locally, `PostgreSQL` in prod), a driver-specific type will crash on a driver that doesn't know it. Use only common types, or split configs.
-
 > The full list of "canonical" types and their per-driver mappings — `Cycle\Database\Schema\AbstractColumn::$mapping` + `Cycle\Database\Driver\{Postgres,SQLServer,MySQL,SQLite}\Schema\*Column::$mapping`.
 
 ---
@@ -81,7 +79,7 @@ public array $embedding;          // pgvector (if installed)
 
 ### Single PK
 
-**`type: 'primary'` / `type: 'bigPrimary'`** — auto-increment INT/BIGINT, PK is set automatically. The most common case.
+**`type: 'primary'` / `type: 'bigPrimary'`** — auto-increment PK (see the type list above). The most common case.
 
 ```php
 #[Column(type: 'primary')]
@@ -95,7 +93,11 @@ public int $id;
 public string $id;
 ```
 
+Adding `primary: true` to a `type: 'primary'` column changes nothing — the type already makes it the PK.
+
 ### Composite PK — two equivalent ways
+
+PK columns are ordinary `int`/`string`/..., never `primary`/`bigPrimary`: those mean auto-increment, which most DBs allow on a single column only.
 
 **A. Multiple `primary: true`** — flag each PK column:
 
@@ -135,16 +137,11 @@ Both ways work and are equivalent at the schema level. Internally Cycle holds tw
 - if **both** are filled and match — ok, no error;
 - if **both** are filled and diverge — `EntityException("Ambiguous primary key definition")`.
 
-**Choice of style** is a project convention. A is more explicit on the field, B keeps the PK declaration in one place. Don't combine them — it's redundant, and on a mismatch it'll crash.
-
-### Pitfalls
-
-- **Composite PK with `type: 'primary'`** — not allowed. `'primary'` means auto-increment, and in most DBs auto-increment can only be on a single column. For a composite PK, use regular `int`/`string`/... + `primary: true` (way A) or `Table(primary: PrimaryKey)` (way B).
-- **`type: 'primary'` + `primary: true` on the same column** — both are true for the schema-builder, the effect is identical (PK + auto-increment), it's just a duplicate declaration. One is enough.
+**Choice of style** is a project convention: A is more explicit on the field, B keeps the PK declaration in one place. Use one style per entity.
 
 ## Identifiers
 
-UUID/ULID/Snowflake columns hydrate as strings. To get a value-object in the property, add a callable or custom typecast (see below).
+UUID/ULID/Snowflake columns hydrate as strings. A `string` property needs nothing more; for a value-object property add a callable or custom typecast (`cycle-orm/references/typecasters-advanced.md`).
 
 **Alternative for UUID generation:** the `#[Uuid7]` attribute (or `Uuid1`..`Uuid6`) from `cycle/entity-behavior-uuid` creates the column itself, registers the typecast and generates a UUID of the required version on `OnCreate` — see `behaviors.md`.
 
@@ -167,10 +164,10 @@ public \DateTimeImmutable $create_time;
 ```
 
 **Important details:**
-- `default: null` is the same as no default (`Annotation/Column.php:73`). For `DEFAULT NULL` set `nullable: true`.
+- `default: null` is the same as no default. For `DEFAULT NULL` set `nullable: true`.
 - A BackedEnum default is stored as its `->value`.
 - `default` is stored in the **schema** (a migration will create the column with `DEFAULT 'draft'`). When creating an entity in PHP this value is **not** applied automatically — it's a DB-level default. If you want a new object `new Status()` to immediately have the value — set the default **also** in PHP (`public string $status = 'draft';`).
-- `castDefault: true` without `default:` — the DDL gets a zero default for the type: `0` for int/datetime, `0.0`, `false`, `''`, or the first enum value (`schema-builder/src/Table/Column.php:148-181`). Schema-only; it doesn't affect hydration.
+- `castDefault: true` without `default:` — the DDL gets a zero default for the type: `0` for int/datetime, `0.0`, `false`, `''`, or the first enum value. Schema-only; it doesn't affect hydration.
 
 ---
 
@@ -197,14 +194,12 @@ enum InvoiceStatus: string
 public InvoiceStatus $status;
 ```
 
-`typecast: InvoiceStatus::class` — at load time Cycle automatically calls `InvoiceStatus::tryFrom($value)` (see the BackedEnum section below).
+`typecast: InvoiceStatus::class` hydrates the value into the enum — see "BackedEnum" below.
 
 You can also pass an array of enum cases:
 ```php
 #[Column(type: 'enum', values: [InvoiceStatus::Draft, InvoiceStatus::Sent])]
 ```
-
-**Pitfall:** SQL ENUM is awkward to migrate (ADD VALUE requires care, ORDER is strict in PG). On PG/MSSQL it's often more practical to keep the column as a `string` + validate at the PHP level.
 
 ---
 
@@ -249,7 +244,7 @@ public string $uuid;
 ```
 
 **Three flags:**
-- `onInsert: true` — the DB generates the value on INSERT. Set **automatically** for every primary field (`type: 'primary'` and `primary: true` alike, `Configurator.php:434-439`) and for `serial` types.
+- `onInsert: true` — the DB generates the value on INSERT. Set **automatically** for every primary field (`type: 'primary'` and `primary: true` alike) and for `serial` types.
 - `beforeInsert: true` — PHP code fills it before INSERT.
 - `beforeUpdate: true` — PHP code refreshes it before every UPDATE.
 
@@ -266,7 +261,7 @@ For a PK generated in PHP (UUID set by a listener or your code), `beforeInsert: 
 public string $email;
 
 #[Column(type: 'decimal', precision: 10, scale: 2)]       // DECIMAL(10,2)
-public string $amount;
+public float $amount;
 
 #[Column(type: 'integer', unsigned: true)]                // UNSIGNED INT (MySQL)
 public int $views;
@@ -296,7 +291,7 @@ Cycle stores data in the DB as strings/numbers. In a PHP entity they must be tur
 
 ## Automatic rules
 
-`Cycle\Schema\Generator\GenerateTypecast` — part of the standard Compiler pipeline (`cycle-orm/references/installation.md`) — assigns a rule to every column **without** `typecast:`, based on the column type in the table schema (`schema-builder/src/Generator/GenerateTypecast.php:40-68`):
+`Cycle\Schema\Generator\GenerateTypecast` — part of the standard Compiler pipeline (`cycle-orm/references/installation.md`) — assigns a rule to every column **without** `typecast:`, based on the column type in the table schema:
 
 | Column type                                  | Inferred rule |
 |----------------------------------------------|---------------|
@@ -306,7 +301,7 @@ Cycle stores data in the DB as strings/numbers. In a PHP entity they must be tur
 | `datetime`/`date`/`time`/`timestamp`         | `datetime`    |
 | everything else (`string`, `json`, `uuid`, `enum`, ...) | none — stays a string |
 
-So `#[Column(type: 'datetime')] public \DateTimeImmutable $at;` works without `typecast:`. Write `typecast:` explicitly for `json`, BackedEnum, value-objects, or to override the inferred rule. Without `GenerateTypecast` in the pipeline nothing is inferred, and a `datetime` column hydrates as a string.
+So `#[Column(type: 'datetime')] public \DateTimeImmutable $at;` works without `typecast:`. Write `typecast:` explicitly for `json`, BackedEnum, value-objects, or to override the inferred rule.
 
 ## Two registration levels
 
@@ -324,11 +319,11 @@ public array $metadata = [];
 class Invoice { /* ... */ }
 ```
 
-**Handler list replaces the built-in one.** `Cycle\ORM\Parser\Typecast` is used only when the entity declares no handler (`orm/src/Factory.php:87-91`). With `typecast: MyHandler::class` alone, the built-in rules — including the inferred `datetime`/`int`/`bool` — stop applying to that entity. List `Typecast::class` explicitly, or add it once via schema defaults:
+**Handler list replaces the built-in one.** `Cycle\ORM\Parser\Typecast` is used only when the entity declares no handler. With `typecast: MyHandler::class` alone, the built-in rules — including the inferred `datetime`/`int`/`bool` — stop applying to that entity. List `Typecast::class` explicitly, or add it once via schema defaults:
 
 ```php
-// Compiler defaults are merged into every entity's handler list: entity handlers first, then defaults
-// (schema-builder/src/Compiler.php:235-249). spiral/cycle-bridge passes its `schema.defaults` config here.
+// Compiler defaults are merged into every entity's handler list: entity handlers first, then defaults.
+// spiral/cycle-bridge passes its `schema.defaults` config here.
 (new Compiler())->compile($registry, $generators, [
     SchemaInterface::TYPECAST_HANDLER => [Typecast::class],
 ]);
@@ -363,28 +358,20 @@ public \DateTimeImmutable $create_time;
 
 ## BackedEnum
 
-The default `Typecast` itself recognizes a `BackedEnum` class and calls `tryFrom()`:
+The default `Typecast` recognizes a `BackedEnum` class as a rule and calls `tryFrom($value)` at load (`InvoiceStatus` as in "Enum columns"):
 
 ```php
-enum InvoiceStatus: string
-{
-    case Draft = 'draft';
-    case Sent  = 'sent';
-    case Paid  = 'paid';
-}
-
 #[Column(type: 'string', typecast: InvoiceStatus::class)]
 public InvoiceStatus $status;
 ```
 
-At load Cycle calls `InvoiceStatus::tryFrom($value)`. Works for both `string`-backed and `int`-backed (with automatic normalization). The built-in `Typecast` handles it — no registration needed unless the entity declares its own handler list (then include `Typecast::class`).
+Works for both `string`-backed and `int`-backed enums (with automatic normalization). The built-in `Typecast` handles it — no registration needed unless the entity declares its own handler list (then include `Typecast::class`).
 
 For **uncast** nothing needs to be configured — DBAL converts a `BackedEnum` to its `value` via `->value` itself.
 
 ## What the built-in rules don't cover
 
-- **UUID/ULID/Snowflake** → need a callable or a custom typecast class.
-- **Value Objects** (`Money`, `Address`, `BillingInterval`) — need a custom typecast class.
+- **Value objects** (UUID/ULID objects, `Money`, `Address`, `BillingInterval`) — a callable or a custom typecast class.
 - **Complex logic** (timezone-conversion, decimal precision, multi-arg formats) — callable or class.
 
 For all that — **read `cycle-orm/references/typecasters-advanced.md`**. It covers:
@@ -398,14 +385,12 @@ For all that — **read `cycle-orm/references/typecasters-advanced.md`**. It cov
 ## Common pitfalls
 
 - **Custom handler on the entity, and `datetime`/`int`/BackedEnum columns come back raw** → `#[Entity(typecast: X::class)]` replaced the built-in handler. Use `typecast: [X::class, Typecast::class]` or add `Typecast::class` to schema defaults.
-- **Custom rule name ignored** → `cycle/annotated` resolves a string rule as a class name relative to the entity namespace, case-insensitively (`Configurator.php:354-371`): rule `'money'` next to a class `Money` becomes `App\Entity\Money`, and your handler never sees `'money'`. Pick rule names that don't match class names in the entity's namespace.
 - **Default string length** — typically 255 (driver-dependent). For email/URL — set `length:` explicitly.
-- **PG-only/MSSQL-only types in a cross-driver project** — crashes on the others. Use `jsonb` only if you're sure of PG; otherwise `json`.
-- **ENUM with migrations** — changing the value list is operationally painful (especially on PG). Often `string` is simpler.
+- **Migration fails on one driver only** (SQLite locally, PostgreSQL in prod) → a driver-specific type (`jsonb`, `inet`, `datetime2`, ...) the other driver doesn't know. Stick to common types (`json`, not `jsonb`) or split configs per driver.
+- **SQL ENUM value list needs to change** → migrating ENUM is painful (ADD VALUE needs care, ordering is strict on PG). On PG/MSSQL a `string` column + PHP-level validation is often more practical.
 - **`datetime` column hydrates as a string** → `GenerateTypecast` is missing from the Compiler pipeline. Add it (or set `typecast: 'datetime'` per column).
 - **`type: 'primary'` on a UUID column** — `primary` is autoincrement INT. For a UUID-PK you need `type: 'uuid'` + `primary: true`.
 - **GeneratedValue without flags** → has no effect (`getFlags()` returns `null`). Set at least one of `beforeInsert`/`onInsert`/`beforeUpdate`.
-- **`property:` typo** in class-level style → the column binds to a non-existent property, and the real property is never hydrated.
 - **Custom rule on a column, but no handler for it on the entity** → the column isn't converted; the raw DB value lands in the property, silently.
 - **DateTime timezone** — the built-in `datetime` rule takes TZ from the DB driver. If the service has a different TZ — set it on the driver, or use your own datetime typecast.
 - **`\DateTime` (mutable) property** → the `datetime` rule produces `DateTimeImmutable`, and hydration fails with `MapperException("Can't hydrate an entity because property and value types are incompatible.")`. Type the property as `\DateTimeImmutable` (or `\DateTimeInterface`).
